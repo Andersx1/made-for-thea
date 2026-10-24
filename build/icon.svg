@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fffaf6"/>
+      <stop offset="1" stop-color="#fde3ea"/>
+    </linearGradient>
+    <!-- petal gradients run from the flower centre (y=0) to the tip (y=-380) in each petal's own coordinates -->
+    <linearGradient id="petalBack" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="-380">
+      <stop offset="0" stop-color="#b3124f"/>
+      <stop offset="0.45" stop-color="#e0457f"/>
+      <stop offset="1" stop-color="#f9a8c5"/>
+    </linearGradient>
+    <linearGradient id="petalFront" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="-380">
+      <stop offset="0" stop-color="#c81d5e"/>
+      <stop offset="0.4" stop-color="#ef6a9a"/>
+      <stop offset="1" stop-color="#ffd0e0"/>
+    </linearGradient>
+    <radialGradient id="heart" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fff3b0"/>
+      <stop offset="1" stop-color="#9bc46a"/>
+    </radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#8a1240" flood-opacity="0.28"/>
+    </filter>
+    <path id="petal" d="M0 0 C 70 -60, 150 -210, 0 -380 C -150 -210, -70 -60, 0 0 Z"/>
+    <path id="rib" d="M0 -40 Q 6 -200 0 -330"/>
+    <g id="stamen">
+      <path d="M0 0 Q 22 -110 6 -190" fill="none" stroke="#f3d27a" stroke-width="9" stroke-linecap="round"/>
+      <ellipse cx="6" cy="-200" rx="13" ry="26" fill="#a8401f" transform="rotate(-14 6 -200)"/>
+    </g>
+  </defs>
+
+  <rect x="48" y="48" width="928" height="928" rx="210" fill="url(#bg)"/>
+
+  <g transform="translate(512 528)" filter="url(#shadow)">
+    <!-- back three petals -->
+    <g fill="url(#petalBack)">
+      <use xlink:href="#petal" transform="rotate(0)"/>
+      <use xlink:href="#petal" transform="rotate(120)"/>
+      <use xlink:href="#petal" transform="rotate(240)"/>
+    </g>
+    <!-- front three petals -->
+    <g fill="url(#petalFront)" stroke="#fff" stroke-opacity="0.35" stroke-width="4">
+      <use xlink:href="#petal" transform="rotate(60) scale(0.96)"/>
+      <use xlink:href="#petal" transform="rotate(180) scale(0.96)"/>
+      <use xlink:href="#petal" transform="rotate(300) scale(0.96)"/>
+    </g>
+    <!-- pale midribs -->
+    <g fill="none" stroke="#fff" stroke-opacity="0.55" stroke-width="10" stroke-linecap="round">
+      <use xlink:href="#rib" transform="rotate(0)"/>
+      <use xlink:href="#rib" transform="rotate(60)"/>
+      <use xlink:href="#rib" transform="rotate(120)"/>
+      <use xlink:href="#rib" transform="rotate(180)"/>
+      <use xlink:href="#rib" transform="rotate(240)"/>
+      <use xlink:href="#rib" transform="rotate(300)"/>
+    </g>
+    <!-- stargazer freckles near the throat -->
+    <g fill="#8e0f40" fill-opacity="0.55">
+      <circle cx="-14" cy="-110" r="7"/><circle cx="16" cy="-140" r="6"/><circle cx="-10" cy="-165" r="5"/>
+      <circle cx="-14" cy="-110" r="7" transform="rotate(60)"/><circle cx="16" cy="-140" r="6" transform="rotate(60)"/>
+      <circle cx="-14" cy="-110" r="7" transform="rotate(120)"/><circle cx="16" cy="-140" r="6" transform="rotate(120)"/><circle cx="-10" cy="-165" r="5" transform="rotate(120)"/>
+      <circle cx="-14" cy="-110" r="7" transform="rotate(180)"/><circle cx="16" cy="-140" r="6" transform="rotate(180)"/>
+      <circle cx="-14" cy="-110" r="7" transform="rotate(240)"/><circle cx="16" cy="-140" r="6" transform="rotate(240)"/><circle cx="-10" cy="-165" r="5" transform="rotate(240)"/>
+      <circle cx="-14" cy="-110" r="7" transform="rotate(300)"/><circle cx="16" cy="-140" r="6" transform="rotate(300)"/>
+    </g>
+    <!-- stamens -->
+    <use xlink:href="#stamen" transform="rotate(-25)"/>
+    <use xlink:href="#stamen" transform="rotate(35)"/>
+    <use xlink:href="#stamen" transform="rotate(95)"/>
+    <use xlink:href="#stamen" transform="rotate(155)"/>
+    <use xlink:href="#stamen" transform="rotate(215)"/>
+    <use xlink:href="#stamen" transform="rotate(275)"/>
+    <circle r="34" fill="url(#heart)"/>
+  </g>
+</svg>
