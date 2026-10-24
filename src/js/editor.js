@@ -8,9 +8,11 @@ import * as G from './geom.js';
 import { fmt, parseLen } from './units.js';
 import { seamChecks } from './seamcheck.js';
 import { ROLES, EDGES } from './sim/garment.js';
-import { rect } from './garments/common.js';
+import { rect, piece as newPiece } from './garments/common.js';
+import { traceShape } from './trace-geom.js';
 
 const ACC = '#c03a6b';
+let drawing = null; // points clicked so far while drawing a new piece: [{x, y, corner}]
 let view = null, sel = { p: null, node: null, seg: null, notch: null }, drag = null, svg = null, lastG = null, lastPt = null;
 const clearSel = () => { sel = { p: null, node: null, seg: null, notch: null }; };
 const piece = () => garment()?.pieces.find((p) => p.id === sel.p);
@@ -20,7 +22,7 @@ function toWorld(e) { const r = svg.getBoundingClientRect(); return { x: (e.clie
 function fit() {
   const g = garment(), r = svg.getBoundingClientRect();
   const bs = g.pieces.map((p) => { const b = G.bbox(G.offsetOutline(p)); return { x: b.x + p.pos.x, y: b.y + p.pos.y, w: b.w, h: b.h }; });
-  if (!bs.length) { view = { s: 4, tx: r.width / 2, ty: r.height / 2 }; return; }
+  if (!bs.length) { view = { s: 10, tx: 40, ty: 40 }; return; }
   const x0 = Math.min(...bs.map((b) => b.x)), y0 = Math.min(...bs.map((b) => b.y)), x1 = Math.max(...bs.map((b) => b.x + b.w)), y1 = Math.max(...bs.map((b) => b.y + b.h));
   const s = Math.min((r.width - 80) / (x1 - x0), (r.height - 80) / (y1 - y0), 20);
   view = { s, tx: r.width / 2 - (x0 + x1) / 2 * s, ty: r.height / 2 - (y0 + y1) / 2 * s };
@@ -63,6 +65,12 @@ function draw() {
   let o = `<g transform="translate(${view.tx},${view.ty}) scale(${view.s})">${grid(k)}`;
   for (const q of g.pieces) o += `<g transform="translate(${q.pos.x},${q.pos.y})">${pieceSVG(q, { k, selected: q.id === sel.p })}</g>`;
   if (p) o += `<g transform="translate(${p.pos.x},${p.pos.y})">${overlay(p, k)}</g>`;
+  if (drawing?.length) {
+    const sh = traceShape(drawing), n = drawing.length;
+    const d = `M${drawing[0].x},${drawing[0].y}` + sh.segs.slice(0, n - 1).map((sg, i) => { const b = drawing[i + 1]; return sg.c1 ? `C${sg.c1.x},${sg.c1.y} ${sg.c2.x},${sg.c2.y} ${b.x},${b.y}` : `L${b.x},${b.y}`; }).join('');
+    o += `<path d="${d}" fill="none" stroke="${ACC}" stroke-width="${2 * k}" pointer-events="none"/>`;
+    drawing.forEach((q, i) => { o += q.corner ? `<rect x="${q.x - 4 * k}" y="${q.y - 4 * k}" width="${8 * k}" height="${8 * k}" fill="${ACC}" stroke="#fff" stroke-width="${1.5 * k}" pointer-events="none"/>` : `<circle cx="${q.x}" cy="${q.y}" r="${(i ? 4 : 6) * k}" fill="${ACC}" stroke="#fff" stroke-width="${1.5 * k}" pointer-events="none"/>`; });
+  }
   svg.innerHTML = o + '</g>';
 }
 
@@ -78,6 +86,11 @@ function bind() {
     const m = toWorld(e), t = e.target, d = t.dataset, p = piece();
     svg.setPointerCapture(e.pointerId);
     if (e.button !== 0 || e.altKey) { drag = { mode: 'pan', sx: e.clientX, sy: e.clientY, tx: view.tx, ty: view.ty }; return; }
+    if (drawing) { // click = corner, Shift+click = a point the edge curves through; snapped to 0.5 cm
+      const q = { x: Math.round(m.x * 2) / 2, y: Math.round(m.y * 2) / 2, corner: !e.shiftKey }, f = drawing[0];
+      if (drawing.length > 2 && Math.hypot(q.x - f.x, q.y - f.y) * view.s < 8) return finishDrawing();
+      drawing.push(q); draw(); props(); return;
+    }
     if (p && d.h) { const [i, w] = d.h.split(':').map(Number); drag = { mode: 'handle', i, w }; return; }
     if (p && d.node != null) { sel.node = +d.node; sel.seg = null; sel.notch = null; drag = { mode: 'node', i: +d.node }; draw(); props(); return; }
     if (p && d.mk) { const [j, i] = d.mk.split(':').map(Number); drag = { mode: 'mark', j, i }; return; }
@@ -122,11 +135,25 @@ function bind() {
 
 export function editorKey(e) {
   const p = piece();
+  if (drawing) {
+    if (e.key === 'Escape') drawing = null;
+    else if (e.key === 'Enter') { finishDrawing(); return true; }
+    else if (e.key === 'Backspace' || e.key === 'Delete') drawing.pop();
+    else return false;
+    draw(); props(); return true;
+  }
   if (e.key === 'Escape') { clearSel(); draw(); props(); return true; }
   if (!p || (e.key !== 'Delete' && e.key !== 'Backspace')) return false;
   if (sel.node != null) { if (G.deleteNode(p, sel.node)) { markEdited(p); sel.node = null; commit(); } return true; }
   if (sel.notch != null) { p.notches.splice(sel.notch, 1); sel.notch = null; markEdited(p); commit(); return true; }
   return false;
+}
+
+function finishDrawing() {
+  if (drawing.length < 3) return;
+  const g = garment(), c = newPiece(`own-${uid()}`, 'New piece', traceShape(drawing));
+  Object.assign(c, { id: uid(), custom: true, edited: true, pos: { x: 0, y: 0 } });
+  g.pieces.push(c); drawing = null; clearSel(); sel.p = c.id; commit();
 }
 
 // ---------- side panel ----------
@@ -140,12 +167,17 @@ const field = (label, f, value, extra = '') => `<label class="row"><span>${label
 function props() {
   const el = document.getElementById('edp'), g = garment(), p = piece();
   if (!el) return;
+  if (drawing) {
+    el.innerHTML = `<h3>Draw a piece</h3><ul class="tip"><li>Click to place each corner. Edges between corners are straight.</li><li><b>Shift+click</b> places a point the edge curves smoothly through. Put one between two corners to scoop or round that edge.</li><li>Click the first point (or press Enter) to close the shape.</li><li>Backspace removes the last point; Esc cancels.</li><li>Points snap to ½ cm. Draw the stitching line; the seam allowance is added around it.</li></ul>
+      <p class="stat">${drawing.length} points</p><div class="btns">${drawing.length > 2 ? '<button class="primary" data-a="drawdone">Finish shape</button>' : ''}${drawing.length ? '<button data-a="drawundo">Undo point</button>' : ''}<button data-a="drawcancel">Cancel</button></div>`;
+    return;
+  }
   if (!p) {
     el.innerHTML = `<h3>${esc(g.name)}</h3><p class="tip">Click a piece to select it. Drag to move it. Scroll to zoom; drag empty space to pan.</p>
       <div class="plist">${g.pieces.map((q) => `<button class="pitem" data-sel="${q.id}">${esc(q.name)}<small>${q.edited ? 'edited · ' : ''}${q.cut.n}×</small></button>`).join('')}</div>
-      <div class="btns"><button data-a="newp">＋ New piece</button><button data-a="arrange">Tidy layout</button><button data-a="fit">Zoom to fit</button>${(g.removed || []).length ? '<button data-a="restore">Restore deleted pieces</button>' : ''}</div>
+      <div class="btns"><button data-a="draw" class="primary">✏️ Draw a piece</button><button data-a="newp">＋ Rectangle</button><button data-a="arrange">Tidy layout</button><button data-a="fit">Zoom to fit</button>${(g.removed || []).length ? '<button data-a="restore">Restore deleted pieces</button>' : ''}</div>
       ${seamPanel(g)}
-      <h4>Editing</h4><ul class="tip"><li>＋ New piece starts your own piece as a rectangle: drag its corners and add points to shape it.</li><li>Select a piece, then drag its round points to reshape it.</li><li>Click an edge to set its seam allowance or see its length.</li><li>Double-click an edge to add a point. Select a point and press Delete to remove it.</li><li>Orange squares on curves are handles that bend the curve.</li><li>Ctrl/⌘+Z undoes anything.</li></ul>`;
+      <h4>Editing</h4><ul class="tip"><li>✏️ Draw a piece: click around a shape of your own. ＋ Rectangle starts from a rectangle instead.</li><li>Select a piece, then drag its round points to reshape it.</li><li>Click an edge to set its seam allowance or see its length.</li><li>Double-click an edge to add a point. Select a point and press Delete to remove it.</li><li>Orange squares on curves are handles that bend the curve.</li><li>Ctrl/⌘+Z undoes anything.</li></ul>`;
     return;
   }
   let h = `<h3>${esc(p.name)}</h3>`;
@@ -178,13 +210,22 @@ function action(a) {
     reset: () => { p.edited = false; regen(g); },
     rot: () => { G.rotate90(p); p.turns = ((p.turns || 0) + 1) % 4; },
     flip: () => { G.flipX(p); p.flipped = !p.flipped; },
+    draw: () => { drawing = []; clearSel(); draw(); props(); return true; },
+    drawdone: () => { finishDrawing(); return true; },
+    drawundo: () => { drawing.pop(); draw(); props(); return true; },
+    drawcancel: () => { drawing = null; draw(); props(); return true; },
     newp: () => { const c = rect(`own-${uid()}`, 'New piece', 30, 40); Object.assign(c, { id: uid(), custom: true, edited: true, pos: { x: -view.tx / view.s + 20, y: -view.ty / view.s + 20 } }); g.pieces.push(c); clearSel(); sel.p = c.id; },
     dup: () => { const c = structuredClone(p); Object.assign(c, { id: uid(), key: `${p.key}-copy-${uid()}`, custom: true, edited: true, name: `${p.name} (copy)`, pos: { x: p.pos.x + 5, y: p.pos.y + 5 } }); g.pieces.push(c); sel.p = c.id; },
     delp: () => { if (!confirm(`Delete "${p.name}"?`)) return true; if (!p.custom) (g.removed ||= []).push(p.key); g.pieces = g.pieces.filter((q) => q !== p); clearSel(); },
     allsa: () => { const v = parseLen(document.querySelector('[data-f="allsa"]').value); if (!(v >= 0)) return true; p.segs.forEach((s) => { if (!s.fold) s.sa = v; }); markEdited(p); },
     curve: () => {
       const s = p.segs[sel.seg], a = p.nodes[sel.seg], b = p.nodes[G.nextI(p, sel.seg)];
-      if (s.c1) { delete s.c1; delete s.c2; } else { s.c1 = G.lerp(a, b, 1 / 3); s.c2 = G.lerp(a, b, 2 / 3); }
+      if (s.c1) { delete s.c1; delete s.c2; } else { // bow the edge into the piece (a scoop); drag the handles to reshape or bow it out
+        const cx = p.nodes.reduce((t, q) => t + q.x, 0) / p.nodes.length, cy = p.nodes.reduce((t, q) => t + q.y, 0) / p.nodes.length;
+        let nx = -(b.y - a.y), ny = b.x - a.x; if (nx * (cx - (a.x + b.x) / 2) + ny * (cy - (a.y + b.y) / 2) < 0) { nx = -nx; ny = -ny; }
+        const bow = (q) => ({ x: q.x + nx * 0.25, y: q.y + ny * 0.25 });
+        s.c1 = bow(G.lerp(a, b, 1 / 3)); s.c2 = bow(G.lerp(a, b, 2 / 3));
+      }
       markEdited(p);
     },
     fold: () => { const s = p.segs[sel.seg]; s.fold = !s.fold; if (s.fold) { s.sa = 0; p.segs.forEach((x, i) => { if (i !== sel.seg) x.fold = false; }); } else s.sa = 1.5; p.cut.fold = s.fold; markEdited(p); },
@@ -198,7 +239,7 @@ function action(a) {
 export function renderPattern(el) {
   const g = garment();
   if (!g) { el.innerHTML = '<div class="empty">Create a garment in <b>Design</b> first.</div>'; return; }
-  if (lastG !== g.id) { view = null; clearSel(); lastG = g.id; }
+  if (lastG !== g.id) { view = null; clearSel(); drawing = null; lastG = g.id; }
   if (sel.p && !piece()) clearSel();
   el.innerHTML = `<div class="editor"><div class="canvas"><svg id="ed"></svg>
     <div class="legend"><span><i class="l-cut"></i>Cutting line</span><span><i class="l-seam"></i>Stitching line</span><span><i class="l-fold"></i>Fold</span><span>${esc(profileOf(g).name)} · ${esc(TYPES[g.type].name)}</span></div></div>
