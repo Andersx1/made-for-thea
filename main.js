@@ -79,6 +79,16 @@ else {
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
 }
 
+// Updates: compare with the newest release on GitHub; the download page opens in her browser.
+const REPO = 'Andersx1/made-for-thea';
+ipcMain.handle('version', () => app.getVersion());
+ipcMain.handle('check-update', async () => {
+  const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { 'User-Agent': 'Made-for-Thea' } });
+  if (!r.ok) throw new Error(`GitHub answered ${r.status}`);
+  const latest = (await r.json()).tag_name.replace(/^v/, ''), current = app.getVersion();
+  return { current, latest, newer: latest.localeCompare(current, undefined, { numeric: true }) > 0 };
+});
+ipcMain.handle('open-releases', () => shell.openExternal(`https://github.com/${REPO}/releases/latest`));
 ipcMain.handle('startup-file', () => { const p = pendingOpen; pendingOpen = null; return p ? readProject(p) : null; });
 ipcMain.handle('open', async () => {
   const r = await dialog.showOpenDialog(win, { filters: FILTER, properties: ['openFile'] });

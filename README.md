@@ -48,6 +48,8 @@ Download the installer from the GitHub **Releases** page.
 - **Windows:** run `Made for Thea Setup x.y.z.exe`. Windows may say "Windows protected your PC"; click **More info → Run anyway**. This happens because the app isn't code-signed.
 - **Mac:** open the `.dmg` and drag the app into Applications. The first time, **right-click the app → Open → Open**, because it isn't signed with a paid Apple certificate.
 
+**Updates:** the bottom of the sidebar shows the version and a **Check for updates** button. The app also checks once when it starts and the button says "Update available" when there is one. It opens the download page; install the new version the same way as the first time.
+
 Projects save as `.clothes` files (File → Save). Your current work is also saved automatically.
 
 ## For the developer

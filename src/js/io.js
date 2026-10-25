@@ -29,6 +29,9 @@ export const openRecent = (p) => N.openRecent(p);
 export const startupFile = () => (N ? N.startupFile() : Promise.resolve(null));
 export const onOpenPath = (f) => N && N.onOpenPath(f);
 export const onMenu = (f) => N && N.onMenu(f);
+export const version = () => N.version();
+export const checkUpdate = () => N.checkUpdate();
+export const openReleases = () => N.openReleases();
 
 export async function makePDF(html, name) {
   if (N) return N.pdf({ html, name });

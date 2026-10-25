@@ -109,6 +109,7 @@ svg.ico { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColo
 #nav button.on svg { color: var(--acc) }
 #nav em { margin-left: auto; font-size: 10px; font-style: normal; color: var(--muted) }
 #nav .foot { margin-top: auto; padding: 12px 10px 2px; font-size: 11.5px; color: var(--muted) }
+#nav .foot button { min-height: 30px; margin-top: 6px; padding: 5px 10px; font-size: 12.5px }
 
 /* Narrow windows: the sidebar becomes an icon rail. */
 @media (max-width: 1180px) {

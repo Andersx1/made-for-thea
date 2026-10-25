@@ -64,8 +64,21 @@ function renderTop() {
     <span class="sep"></span>
     <span class="group"><button data-a="newp" title="New project">${icon('new')}<span class="lbl">New</span></button><button data-a="open" title="Open a project (Ctrl/⌘+O)">${icon('open')}<span class="lbl">Open</span></button><button data-a="save" class="primary" title="Save (Ctrl/⌘+S)">${icon('save')}Save</button></span>`;
 }
+// The desktop app checks GitHub for a newer version once at startup, and again from the button.
+let ver = null, update = null;
 function renderNav() {
-  $('#nav').innerHTML = TABS.map(([id, label, , grp]) => `${grp ? `<div class="grp">${grp}</div>` : ''}<button data-tab="${id}" class="${S.tab === id ? 'on' : ''}" title="${label}">${icon(id)}<span class="label">${label}</span></button>`).join('');
+  $('#nav').innerHTML = TABS.map(([id, label, , grp]) => `${grp ? `<div class="grp">${grp}</div>` : ''}<button data-tab="${id}" class="${S.tab === id ? 'on' : ''}" title="${label}">${icon(id)}<span class="label">${label}</span></button>`).join('')
+    + (ver ? `<div class="foot">Version ${esc(ver)}<button data-a="update" class="${update ? 'on' : ''}">${update ? `Update available: ${esc(update)}` : 'Check for updates'}</button></div>` : '');
+}
+async function checkUpdate(quiet) {
+  try {
+    const u = await io.checkUpdate();
+    update = u.newer ? u.latest : null; renderNav();
+    if (u.newer && !quiet && confirm(`Version ${u.latest} is available (you have ${u.current}).
+
+Open the download page? On a Mac, download the .dmg and drag the app into Applications to replace this one. On Windows, run the Setup .exe.`)) io.openReleases();
+    if (!u.newer && !quiet) alert(`You have the latest version (${u.current}).`);
+  } catch { if (!quiet) alert("Couldn't check for updates. Check that you're online and try again."); }
 }
 let queued = false;
 function renderAll() {
@@ -99,7 +112,7 @@ $('#top').addEventListener('change', (e) => {
   if (f === 'garment') { if (e.target.value === '__new') { S.choosing = true; S.tab = 'design'; } else { P.active = e.target.value; S.choosing = false; } }
   commit();
 });
-$('#nav').addEventListener('click', (e) => { const t = e.target.closest('[data-tab]')?.dataset.tab; if (t) { S.tab = t; renderAll(); } });
+$('#nav').addEventListener('click', (e) => { const t = e.target.closest('[data-tab]')?.dataset.tab; if (t) { S.tab = t; renderAll(); } if (e.target.closest('[data-a="update"]')) checkUpdate(false); });
 addEventListener('keydown', (e) => {
   const typing = e.target.matches('input, textarea, select'), mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
   if (mod && k === 's') { e.preventDefault(); save(e.shiftKey); return; }
@@ -114,6 +127,7 @@ io.onMenu((cmd) => ACT[cmd]?.());
 io.onOpenPath(openFile);
 subscribe(renderAll);
 
+if (io.isApp) io.version().then((v) => { ver = v; renderNav(); checkUpdate(true); });
 // Start: a file the app was opened with, else the autosave, else a fresh project.
 (async () => {
   const f = await io.startupFile();
