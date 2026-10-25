@@ -1,7 +1,7 @@
 {
   "name": "made-for-thea",
   "productName": "Made for Thea",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Draft sewing patterns from your measurements, print them at true scale, and plan your sewing.",
   "main": "main.js",
   "scripts": {

@@ -3,7 +3,7 @@
 // the Design options until reset.
 import { S, commit, garment, regen, arrange, uid, profileOf } from './store.js';
 import { TYPES } from './garments/index.js';
-import { pieceSVG, pts, esc } from './render.js';
+import { pieceSVG, pts, esc, placedBox } from './render.js';
 import * as G from './geom.js';
 import { fmt, parseLen } from './units.js';
 import { seamChecks } from './seamcheck.js';
@@ -12,6 +12,32 @@ import { rect, piece as newPiece } from './garments/common.js';
 import { traceShape } from './trace-geom.js';
 
 const ACC = '#c03a6b';
+// Body guide: her measurements at true size beside the pieces, as a half front (centre line on the left).
+let guide = true;
+const guideRows = (m) => { const w = m.backLength; return [['Shoulder ½', 0, m.shoulderWidth / 2], ['Bust ¼', m.armholeDepth + 3, m.bust / 4], ['Waist ¼', w, m.waist / 4], ['Hip ¼', w + m.waistToHip, m.hip / 4], ['Knee', w + m.waistToKnee, 0], ['Floor', w + m.waistToFloor, 0]]; };
+const guideX = (m) => -Math.max(m.bust, m.hip) / 4 - 15;
+function guideSVG(m, k) {
+  const cx = guideX(m), rows = guideRows(m), floor = rows[5][1], t = (x, y, txt, a = 'start') => `<text x="${x}" y="${y}" font-size="${11 * k}" text-anchor="${a}">${esc(txt)}</text>`;
+  let o = `<g class="guide" pointer-events="none"><line x1="${cx}" y1="${-2}" x2="${cx}" y2="${floor}" stroke-dasharray="${4 * k} ${3 * k}" stroke-width="${k}"/>`
+    + t(cx, -3, `Body guide · ${profileOf(garment()).name} · centre line`);
+  for (const [name, y, w] of rows) {
+    o += w ? `<line x1="${cx}" y1="${y}" x2="${cx + w}" y2="${y}" stroke-width="${1.5 * k}"/><line x1="${cx + w}" y1="${y - 1}" x2="${cx + w}" y2="${y + 1}" stroke-width="${1.5 * k}"/>` + t(cx + 1, y - 0.6, `${name} ${fmt(w)}`)
+      : `<line x1="${cx - 2}" y1="${y}" x2="${cx + 2}" y2="${y}" stroke-width="${1.5 * k}"/>` + t(cx - 3, y, name, 'end');
+  }
+  return o + '</g>';
+}
+// What each named edge sews to, in one colour per join (a side seam sews to the other side seams).
+const JOIN = { side: '#2563eb', shoulder: '#16a34a', armhole: '#d97706', cap: '#d97706', centre: '#7c3aed', princess: '#0891b2', underarm: '#0d9488', hem: '#db2777', waist: '#db2777', inseam: '#65a30d' };
+function joinsSVG(q, k) {
+  if (!q.custom || !ROLES[q.role]) return '';
+  const label = Object.fromEntries(EDGES[ROLES[q.role][1]]);
+  return q.segs.map((s, i) => {
+    if (!JOIN[s.name]) return '';
+    const P = G.segPts(q, i), mid = P[P.length >> 1];
+    return `<polyline points="${pts(P)}" fill="none" stroke="${JOIN[s.name]}" stroke-width="${4 * k}" stroke-linecap="round" opacity=".85" pointer-events="none"/>`
+      + `<text x="${mid.x}" y="${mid.y}" font-size="${10 * k}" text-anchor="middle" dominant-baseline="central" fill="${JOIN[s.name]}" stroke="#fff" stroke-width="${3 * k}" paint-order="stroke" pointer-events="none">${esc(label[s.name] || s.name)}</text>`;
+  }).join('');
+}
 let drawing = null; // points clicked so far while drawing a new piece: [{x, y, corner}]
 let view = null, sel = { p: null, node: null, seg: null, notch: null }, drag = null, svg = null, lastG = null, lastPt = null;
 const clearSel = () => { sel = { p: null, node: null, seg: null, notch: null }; };
@@ -22,6 +48,7 @@ function toWorld(e) { const r = svg.getBoundingClientRect(); return { x: (e.clie
 function fit() {
   const g = garment(), r = svg.getBoundingClientRect();
   const bs = g.pieces.map((p) => { const b = G.bbox(G.offsetOutline(p)); return { x: b.x + p.pos.x, y: b.y + p.pos.y, w: b.w, h: b.h }; });
+  if (guide) { const m = profileOf(g).m, cx = guideX(m); bs.push({ x: cx - 12, y: -6, w: -cx + 12, h: guideRows(m)[5][1] + 8 }); }
   if (!bs.length) { view = { s: 10, tx: 40, ty: 40 }; return; }
   const x0 = Math.min(...bs.map((b) => b.x)), y0 = Math.min(...bs.map((b) => b.y)), x1 = Math.max(...bs.map((b) => b.x + b.w)), y1 = Math.max(...bs.map((b) => b.y + b.h));
   const s = Math.min((r.width - 80) / (x1 - x0), (r.height - 80) / (y1 - y0), 20);
@@ -63,7 +90,8 @@ function overlay(p, k) {
 function draw() {
   const g = garment(), k = 1 / view.s, p = piece();
   let o = `<g transform="translate(${view.tx},${view.ty}) scale(${view.s})">${grid(k)}`;
-  for (const q of g.pieces) o += `<g transform="translate(${q.pos.x},${q.pos.y})">${pieceSVG(q, { k, selected: q.id === sel.p })}</g>`;
+  if (guide) o += guideSVG(profileOf(g).m, k);
+  for (const q of g.pieces) o += `<g transform="translate(${q.pos.x},${q.pos.y})">${pieceSVG(q, { k, selected: q.id === sel.p })}${joinsSVG(q, k)}</g>`;
   if (p) o += `<g transform="translate(${p.pos.x},${p.pos.y})">${overlay(p, k)}</g>`;
   if (drawing?.length) {
     const sh = traceShape(drawing), n = drawing.length;
@@ -175,8 +203,9 @@ function props() {
   if (!p) {
     el.innerHTML = `<h3>${esc(g.name)}</h3><p class="tip">Click a piece to select it. Drag to move it. Scroll to zoom; drag empty space to pan.</p>
       <div class="plist">${g.pieces.map((q) => `<button class="pitem" data-sel="${q.id}">${esc(q.name)}<small>${q.edited ? 'edited · ' : ''}${q.cut.n}×</small></button>`).join('')}</div>
-      <div class="btns"><button data-a="draw" class="primary">✏️ Draw a piece</button><button data-a="newp">＋ Rectangle</button><button data-a="arrange">Tidy layout</button><button data-a="fit">Zoom to fit</button>${(g.removed || []).length ? '<button data-a="restore">Restore deleted pieces</button>' : ''}</div>
+      <div class="btns"><button data-a="draw" class="primary">✏️ Draw a piece</button><button data-a="newp">＋ Rectangle</button><button data-a="guide">${guide ? 'Hide' : 'Show'} body guide</button><button data-a="arrange">Tidy layout</button><button data-a="fit">Zoom to fit</button>${(g.removed || []).length ? '<button data-a="restore">Restore deleted pieces</button>' : ''}</div>
       ${seamPanel(g)}
+      <h4>Size</h4><p class="tip">The body guide shows ${esc(profileOf(g).name)}'s measurements at true size. Each line is a quarter of the measurement: the width one front piece needs when you cut 2, so the pair goes halfway round. Add 1–4 cm for ease. Bodices start at the top line (neck); skirts and trousers start at the waist line.</p>
       <h4>Editing</h4><ul class="tip"><li>✏️ Draw a piece: click around a shape of your own. ＋ Rectangle starts from a rectangle instead.</li><li>Select a piece, then drag its round points to reshape it.</li><li>Click an edge to set its seam allowance or see its length.</li><li>Double-click an edge to add a point. Select a point and press Delete to remove it.</li><li>Orange squares on curves are handles that bend the curve.</li><li>Ctrl/⌘+Z undoes anything.</li></ul>`;
     return;
   }
@@ -185,7 +214,7 @@ function props() {
   h += field('Name', 'piecename', p.name) + `<label class="row"><span>Cut</span><input type="number" min="1" data-f="pcut" value="${p.cut.n}"></label>`
     + `<label class="row"><span>Mirror pairs</span><input type="checkbox" data-f="pmirror" ${p.cut.mirror ? 'checked' : ''}></label>`
     + (p.custom ? `<label class="row"><span>In 3D</span><select data-f="prole"><option value="">Not shown</option>${Object.entries(ROLES).map(([k, [n]]) => `<option value="${k}" ${p.role === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-      ${p.role ? '<p class="tip">Click each edge that sews to another piece and choose what it is. Cut 2 (or put the centre on the fold) for a full front or back.</p>' : ''}` : '')
+      ${p.role ? '<p class="tip">Click each edge that sews to another piece and choose under <b>Sews to</b> what it is. Edges with the same name are sewn together: the front’s side seam to the back’s side seam, a shoulder to a shoulder, a sleeve cap into the armhole, a bodice bottom to a skirt waist. A centre seam is sewn to the centre seam of the mirrored copy. Named edges are coloured: same colour, sewn together. Cut 2 (or put the centre on the fold) for a full front or back.</p>' : ''}` : '')
     + `<div class="btns"><button data-a="rot">⟳ Rotate 90°</button><button data-a="flip">⇋ Flip</button><button data-a="dup">Duplicate</button><button data-a="delp" class="danger">Delete piece</button></div>`
     + `<h4>Seam allowance</h4><div class="inline"><input data-f="allsa" value="${esc(fmt(p.segs.find((s) => !s.fold)?.sa ?? 1.5))}"><button data-a="allsa">Set on all edges</button></div>`;
   if (sel.seg != null && p.segs[sel.seg]) {
@@ -210,11 +239,15 @@ function action(a) {
     reset: () => { p.edited = false; regen(g); },
     rot: () => { G.rotate90(p); p.turns = ((p.turns || 0) + 1) % 4; },
     flip: () => { G.flipX(p); p.flipped = !p.flipped; },
+    guide: () => { guide = !guide; fit(); draw(); props(); return true; },
     draw: () => { drawing = []; clearSel(); draw(); props(); return true; },
     drawdone: () => { finishDrawing(); return true; },
     drawundo: () => { drawing.pop(); draw(); props(); return true; },
     drawcancel: () => { drawing = null; draw(); props(); return true; },
-    newp: () => { const c = rect(`own-${uid()}`, 'New piece', 30, 40); Object.assign(c, { id: uid(), custom: true, edited: true, pos: { x: -view.tx / view.s + 20, y: -view.ty / view.s + 20 } }); g.pieces.push(c); clearSel(); sel.p = c.id; },
+    newp: () => { // beside the other pieces, top at the guide's neck line
+      const c = rect(`own-${uid()}`, 'New piece', 30, 40), right = g.pieces.length ? Math.max(...g.pieces.map((q) => { const bb = placedBox(q); return bb.x + bb.w; })) + 5 : 5;
+      Object.assign(c, { id: uid(), custom: true, edited: true, pos: { x: right, y: 0 } }); g.pieces.push(c); clearSel(); sel.p = c.id;
+    },
     dup: () => { const c = structuredClone(p); Object.assign(c, { id: uid(), key: `${p.key}-copy-${uid()}`, custom: true, edited: true, name: `${p.name} (copy)`, pos: { x: p.pos.x + 5, y: p.pos.y + 5 } }); g.pieces.push(c); sel.p = c.id; },
     delp: () => { if (!confirm(`Delete "${p.name}"?`)) return true; if (!p.custom) (g.removed ||= []).push(p.key); g.pieces = g.pieces.filter((q) => q !== p); clearSel(); },
     allsa: () => { const v = parseLen(document.querySelector('[data-f="allsa"]').value); if (!(v >= 0)) return true; p.segs.forEach((s) => { if (!s.fold) s.sa = v; }); markEdited(p); },

@@ -29,6 +29,10 @@
 [data-theme=dark] .legend .l-cut { border-top-color: var(--ink) }
 [data-theme=dark] .progress { background: var(--line) }
 [data-theme=dark] table.seams tr.bad td { color: #fbbf24 }
+#ed .guide line { stroke: #8a7fa0 }
+#ed .guide text { fill: #6b6180 }
+[data-theme=dark] #ed .guide line { stroke: #b9b1c6 }
+[data-theme=dark] #ed .guide text { fill: #d6d0de }
 /* Viewers: a lighter grey than the panels, with pieces, paper and fabric in light grey (screen only, so prints stay white). */
 @media screen {
   [data-theme=dark] #ed, [data-theme=dark] svg.preview, [data-theme=dark] svg.fabric, [data-theme=dark] .tcanvas, [data-theme=dark] .sboard, [data-theme=dark] .sboard svg { background: #4d4c53 }

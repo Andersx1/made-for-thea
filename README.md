@@ -15,7 +15,7 @@ Draft sewing patterns from your own measurements, adjust them, print them at tru
   - Waist finishes: waistband, facing, or elastic. Zip at the back or side, plus in-seam or patch pockets.
   - Simple shapes: tote bag, apron, scrunchie, cushion cover, or any rectangle or circle.
   - Traced patterns: copy pieces from an existing paper pattern (see Trace below).
-  - **Your own design:** start from a blank garment and draw your own pieces in the Pattern editor: ✏️ Draw a piece, then click each corner (Shift+click for points a curved edge passes through), or start from a rectangle.
+  - **Your own design:** start from a blank garment and draw your own pieces in the Pattern editor: ✏️ Draw a piece, then click each corner (Shift+click for points a curved edge passes through), or start from a rectangle. A **body guide** beside the pieces shows her shoulder, bust, waist and hip (a quarter of each, the width one front piece needs) and her knee and floor lengths at true size, so pieces are drawn big enough.
 - **Pattern:**
   - Drag points and curve handles, and double-click an edge to add a point.
   - Set the seam allowance per edge, add notches, and rotate, flip or duplicate pieces.
