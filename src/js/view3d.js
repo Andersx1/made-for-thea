@@ -3,6 +3,7 @@
 import * as THREE from '../../node_modules/three/build/three.module.js';
 import { S, commit, garment, profileOf } from './store.js';
 import { esc } from './render.js';
+import { fmt } from './units.js';
 import { makeBody } from './sim/body.js';
 import { buildSDF, vertexNormals } from './sim/sdf.js';
 import { assemble, bandMesh, simType } from './sim/garment.js';
@@ -83,8 +84,11 @@ function build(g) {
   showBody(B);
   V.root.clear(); run = null;
   let sys;
+  V.short = '';
   try { sys = assemble(g, m, B.body, B.F); } catch (e) { console.error(e); setMsg('This pattern couldn\'t be sewn up in 3D. If you edited a piece a lot, try resetting it.'); return; }
   if (!sys) { setMsg('None of these pieces can be draped in 3D.'); return; }
+  V.short = sys.short.length ? `<div class="warn"><b>Too small to fit ${esc(profileOf(g).name)}</b>${sys.short.map((s) => `<br>At the ${s.where} your pieces go ${esc(fmt(s.cloth))} round, but the measurement is ${esc(fmt(s.body))}. Make them about ${esc(fmt(s.body - s.cloth + 4))} bigger round in total.`).join('')}<br><small>Too-small cloth can't sit on the body, so it may not show properly. Use the body guide in Pattern: each line is the width one front or back piece needs when you cut 2, plus a little ease.</small></div>` : '';
+  const sh = document.querySelector('.v3d [data-short]'); if (sh) sh.innerHTML = V.short;
   const mat = clothMaterial(g.fabric), parts = [];
   for (const I of sys.inst) {
     const n = I.pc.mesh.pts.length, geo = new THREE.BufferGeometry();
@@ -157,7 +161,7 @@ export function render3D(el) {
   g.fabric.kind ||= defaultFabric(g.type);
   const fab = g.fabric;
   el.innerHTML = `<div class="v3d"><div class="v3dcanvas"><div class="v3dmsg" hidden></div></div>
-    <aside class="opts"><h3>3D preview</h3>
+    <aside class="opts"><h3>3D preview</h3><div data-short>${V?.short || ''}</div>
       <label class="row"><span>Fabric</span><select data-f="fkind">${Object.entries(FABRICS).map(([k, f]) => `<option value="${k}" ${k === fab.kind ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
       ${fab.image ? '' : `<label class="row"><span>Fabric colour</span><input type="color" data-f="fcolor" value="${fab.color}"></label>`}
       <div class="row"><span>Fabric photo</span><div class="inline">${fab.image ? `<img class="swatch" src="${fab.image}" alt=""><button data-a="nophoto">Remove</button>` : '<button data-a="photo">Choose photo…</button>'}</div></div>

@@ -5,6 +5,7 @@ import { makeBody } from '../src/js/sim/body.js';
 import { buildSDF, sample } from '../src/js/sim/sdf.js';
 import { assemble } from '../src/js/sim/garment.js';
 import { rotate90 } from '../src/js/geom.js';
+import { rect } from '../src/js/garments/common.js';
 import { makeSim, FABRICS } from '../src/js/sim/solver.js';
 import { TYPES, normalize } from '../src/js/garments/index.js';
 import { defaults } from '../src/js/measure-data.js';
@@ -70,4 +71,14 @@ test('pieces of your own sew up in 3D once given a role, whichever way round the
   assert.ok(sys && sys.seams.length > 50, `seams (${sys?.seams.length})`);
   assert.ok(sys.pins.length > 20, 'held at the waist');
   assert.equal(assemble({ ...g, pieces: g.pieces.map((p) => ({ ...p, role: undefined })) }, m, body, F), null, 'no roles, no 3D');
+});
+
+test('pieces of your own that are too small to go round her are reported, with the shortfall', () => {
+  const own = (w) => ['skirt-front', 'skirt-back'].map((role, i) => ({ ...rect(`own-${i}`, 'Piece', w, 50), custom: true, role, cut: { n: 2, mirror: true },
+    segs: ['waist', 'side', '', 'centre'].map((name) => ({ name, sa: 1.5 })) }));
+  const small = assemble({ type: 'custom', options: {}, pieces: own(12) }, m, body, F);
+  const hip = small.short.find((s) => s.where === 'hip');
+  assert.ok(hip && Math.abs(hip.cloth - 48) < 1 && hip.body === m.hip, `hip reported: ${JSON.stringify(small.short)}`);
+  assert.deepEqual(assemble({ type: 'custom', options: {}, pieces: own(30) }, m, body, F).short, [], 'big enough: no warning');
+  assert.deepEqual(assemble(garmentOf('skirt'), m, body, F).short, [], 'drafted patterns are not checked');
 });

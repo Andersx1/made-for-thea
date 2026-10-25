@@ -293,6 +293,14 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
     const T = G[gk], r = clamp(row, T.lo, T.hi), a = Math.floor(r), at = (k) => { for (let d = 0; d < 40; d++) { const v = T.rows.get(k + d) ?? T.rows.get(k - d); if (v !== undefined) return v; } return 0; };
     return mix(at(a), at(Math.min(a + 1, T.hi)), r - a);
   };
+  // Your own pieces drawn too small to go round the body: the cloth's girth vs her measurement at the
+  // bust, waist and hip, wherever the pieces reach that far. Drafted patterns are left alone (stretch ease).
+  const short = [];
+  if (src.some((p) => p.custom)) {
+    const chk = (gk, row, where, body) => { const T = G[gk]; if (T && body > 0 && row >= T.lo && row <= T.hi && girth(gk, row) < body) short.push({ where, cloth: girth(gk, row), body }); };
+    chk('torso', (m.armholeDepth || 18) + 3, 'bust', m.bust); chk('torso', m.backLength - 2, 'waist', m.waist);
+    chk('skirt', 1, 'waist', m.waist); chk('skirt', m.waistToHip, 'hip', m.hip); chk('legs', m.waistToHip, 'hip', m.hip);
+  }
   const xcen = (face, y) => { const T = G.legs.xcen[face], a = Math.floor(y); return T.get(a) ?? T.get(a + 1) ?? T.get(a - 1) ?? 0; };
 
   // ---------- initial placement ----------
@@ -552,7 +560,7 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
   const seamArr = [...seams.values()];
   const grip = new Uint8Array(N); // straps grip the shoulder like fabric on skin
   for (const I of inst) if (I.frame === 'strap') grip.fill(1, I.base, I.base + I.pc.mesh.pts.length);
-  return { inst, N, x, uv, pts2, mass, stretch: st, bend: bd, strong, seams: seamArr, pins, grip, bands, h };
+  return { inst, N, x, uv, pts2, mass, stretch: st, bend: bd, strong, seams: seamArr, pins, grip, bands, h, short };
 }
 
 // Ribbon mesh for a band: rows of points stepped out from the cloth edge.

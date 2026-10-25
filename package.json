@@ -1,7 +1,7 @@
 {
   "name": "made-for-thea",
   "productName": "Made for Thea",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Draft sewing patterns from your measurements, print them at true scale, and plan your sewing.",
   "main": "main.js",
   "scripts": {
@@ -12,6 +12,7 @@
   "build": {
     "appId": "com.clothesdesigner.app",
     "productName": "Made for Thea",
+    "afterPack": "tools/mac-adhoc-sign.js",
     "icon": "build/icon.png",
     "files": [
       "main.js",
