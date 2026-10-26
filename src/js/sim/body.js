@@ -26,13 +26,25 @@ const MAP = [
 ];
 // MakeHuman's rulers measure circumferences around both sides of a limb loop; lengths are straight lines.
 // Body lengths are measured over the curve of the body, so straight lines are compared with a small factor.
-const FACTOR = { backLength: 0.97, waistToHip: 0.92, shoulderLength: 0.95, armLength: 0.92, shoulderToBust: 0.97 };
-// Bust types: firmness (-1 soft … 1 firm), fullness (-1 fuller below … 1 fuller above) and projection.
-// Size, spread and height come from the measurements instead.
-export const BUST_TYPES = {
-  average: ['Average', 0, 0, 0], round: ['Round (full above and below)', 1, 1, 0], teardrop: ['Teardrop (fuller below)', 0, -1, 0],
-  relaxed: ['Relaxed (softer, sits lower)', -1, -1, 0], projected: ['Projected (pointed)', 0.4, 0, 1],
-};
+// Bust point to bust point is straight across; shoulder to bust point goes over the chest. Both are
+// calibrated so the average measurements give the base body's own bust.
+const FACTOR = { backLength: 0.97, waistToHip: 0.92, shoulderLength: 0.95, armLength: 0.92, bustSpan: 1.2, shoulderToBust: 1.024 };
+// The bust on the 3D model: [key, label, [[value, label, ...shape weights]], shown only in this mode].
+// Weights stay moderate so that even all the extremes together still look like a real body.
+// Unchosen options fall back to the one with zero weight (medium/average), or the first.
+export const BUST = [
+  ['mode', 'Shape it from', [['measure', 'My measurements'], ['simple', 'Simple choices']]],
+  ['size', 'Size', [['xs', 'Very small', -1], ['s', 'Small', -0.5], ['m', 'Medium', 0], ['l', 'Large', 0.5], ['xl', 'Very large', 1]], 'simple'],
+  ['set', 'Spacing', [['close', 'Close set', -0.7], ['medium', 'Medium', 0], ['wide', 'Wide set', 0.7]], 'simple'],
+  ['height', 'Height', [['high', 'High', 0.6], ['medium', 'Medium', 0], ['low', 'Low', -0.6]], 'simple'],
+  ['firm', 'Firmness', [['firm', 'Firm', 0.6], ['average', 'Average', 0], ['soft', 'Soft', -0.6]]],
+  ['shape', 'Shape', [['average', 'Average', 0, 0], ['round', 'Round (full above and below)', 0.6, 0], ['teardrop', 'Teardrop (fuller below)', -0.6, 0], ['projected', 'Projected (pointed)', 0, 0.6]]],
+  ['nipple', 'Nipples', [['small', 'Small', -0.7, -0.4], ['average', 'Average', 0, 0], ['large', 'Large', 0.7, 0], ['prominent', 'Prominent', 0.4, 0.7]]],
+];
+export function bustChoice(m, key) {
+  const ch = BUST.find((b) => b[0] === key)[2];
+  return ch.find((c) => c[0] === m.bust3d?.[key]) || ch.find((c) => c[2] === 0) || ch[0];
+}
 
 export function makeBody(m) {
   const R = raw(), pos = Float32Array.from(R.base), T = R.targets;
@@ -41,14 +53,21 @@ export function makeBody(m) {
   // Overall build: heavier/lighter from the hip-to-height relationship, then cup size from bust − underbust.
   const build = Math.max(-1, Math.min(1, (m.hip / m.height - 0.6) / 0.08));
   addTarget(pos, build >= 0 ? T['universal-female-young-averagemuscle-maxweight'] : T['universal-female-young-averagemuscle-minweight'], Math.abs(build));
-  const cup = Math.max(-1, Math.min(1, ((m.bust - m.underbust) - 15) / 7));
-  const [, firm, full, point] = BUST_TYPES[m.bustShape] || BUST_TYPES.average;
+  const simple = bustChoice(m, 'mode')[0] === 'simple', [, , firm] = bustChoice(m, 'firm'), [, , full, point] = bustChoice(m, 'shape'), [, , nSize, nPoint] = bustChoice(m, 'nipple');
+  const cup = simple ? bustChoice(m, 'size')[2] : Math.max(-1, Math.min(1, ((m.bust - m.underbust) - 15) / 7));
   // MakeHuman's cup × firmness grid: blend the corners around (cup, firmness); average/average is the base.
   for (const [c, wc] of [['average', 1 - Math.abs(cup)], [cup >= 0 ? 'max' : 'min', Math.abs(cup)]])
     for (const [f, wf] of [['average', 1 - Math.abs(firm)], [firm >= 0 ? 'max' : 'min', Math.abs(firm)]])
       if (c !== 'average' || f !== 'average') addTarget(pos, T[`female-young-averagemuscle-averageweight-${c}cup-${f}firmness`], wc * wf);
   addTarget(pos, full >= 0 ? T['breast-volume-vert-up'] : T['breast-volume-vert-down'], Math.abs(full));
   addTarget(pos, point >= 0 ? T['breast-point-incr'] : T['breast-point-decr'], Math.abs(point));
+  addTarget(pos, nSize >= 0 ? T['nipple-size-incr'] : T['nipple-size-decr'], Math.abs(nSize));
+  addTarget(pos, nPoint >= 0 ? T['nipple-point-incr'] : T['nipple-point-decr'], Math.abs(nPoint));
+  if (simple) { // spacing and height chosen directly instead of fitted to the measurements
+    const set = bustChoice(m, 'set')[2], up = bustChoice(m, 'height')[2];
+    addTarget(pos, set >= 0 ? T['breast-dist-incr'] : T['breast-dist-decr'], Math.abs(set));
+    addTarget(pos, up >= 0 ? T['breast-trans-up'] : T['breast-trans-down'], Math.abs(up));
+  }
   // Height (solved by secant on the height targets); repeated at the end because length targets change it.
   const solveHeight = () => { for (let it = 0; it < 3; it++) {
     const h0 = heightOf(pos), up = T['female-young-averagemuscle-averageweight-maxheight'], dn = T['female-young-averagemuscle-averageweight-minheight'], t = m.height > h0 ? up : dn;
@@ -58,13 +77,13 @@ export function makeBody(m) {
   } };
   solveHeight();
   // One secant step of a target pair towards a wanted measurement.
-  const fit = (name, want, measure, incr, decr) => {
+  const fit = (name, want, measure, incr, decr, lim = 2) => {
     const now = measure(pos), ts = want > now ? incr : decr;
     const probe = Float32Array.from(pos); for (const t of ts) addTarget(probe, t, 0.5);
     const per = (measure(probe) - now) / 0.5;
     if (Math.abs(per) < 1e-6) return;
     const w = Math.max(-1.5, Math.min(1.5, (want - now) / per)), sum = (weights[name] || 0) + w;
-    const wClamped = Math.max(-2, Math.min(2, sum)) - (weights[name] || 0); // keep shapes believable
+    const wClamped = Math.max(-lim, Math.min(lim, sum)) - (weights[name] || 0); // keep shapes believable
     for (const t of ts) addTarget(pos, t, wClamped);
     weights[name] = (weights[name] || 0) + wClamped;
   };
@@ -73,13 +92,14 @@ export function makeBody(m) {
   const toBust = (q) => { const a = apexes(q, R.loops)[0]; return Math.hypot(q[nk * 3] - a[0], q[nk * 3 + 1] - a[1], q[nk * 3 + 2] - a[2]); };
   // Measurements: a few rounds, because neighbouring targets (bust/underbust, waist/hip) interact.
   for (let round = 0; round < 4; round++) {
+    // Bust position first, so the circumferences are fitted last; bust shapes only within their designed range (beyond it they distort).
+    if (!simple && m.bustSpan > 0) fit('bust-span', m.bustSpan * FACTOR.bustSpan, span, [T['breast-dist-incr']], [T['breast-dist-decr']], 1);
+    if (!simple && m.shoulderToBust > 0) fit('bust-height', m.shoulderToBust * FACTOR.shoulderToBust, toBust, [T['breast-trans-down']], [T['breast-trans-up']], 1);
     for (const [key, names] of MAP) {
       const list = [names].flat(), want = m[key] * (FACTOR[key] || 1);
       if (!(want > 0) || list.some((n) => !R.loops[n])) continue;
       fit(list.join('+'), want, (q) => list.reduce((a, n) => a + loopLen(q, R.loops[n]), 0), list.map((n) => T[`measure-${n}-incr`]), list.map((n) => T[`measure-${n}-decr`]));
     }
-    if (m.bustSpan > 0) fit('bust-span', m.bustSpan, span, [T['breast-dist-incr']], [T['breast-dist-decr']]);
-    if (m.shoulderToBust > 0) fit('bust-height', m.shoulderToBust * FACTOR.shoulderToBust, toBust, [T['breast-trans-down']], [T['breast-trans-up']]);
   }
   solveHeight();
   // Stand on the floor, centred.
@@ -87,7 +107,7 @@ export function makeBody(m) {
   for (let i = 0; i < R.n; i++) { minY = Math.min(minY, pos[i * 3 + 1]); cx += pos[i * 3]; cz += pos[i * 3 + 2]; }
   cx /= R.n; cz /= R.n;
   for (let i = 0; i < R.n; i++) { pos[i * 3] -= cx; pos[i * 3 + 1] -= minY; pos[i * 3 + 2] -= cz; }
-  return { pos, tris: R.tris, loops: R.loops, landmarks: landmarks(pos, R.loops), pads: pads(pos, R.loops), measure: (name) => loopLen(pos, R.loops[name]), span: span(pos), toBust: toBust(pos) / FACTOR.shoulderToBust };
+  return { pos, tris: R.tris, loops: R.loops, landmarks: landmarks(pos, R.loops), pads: pads(pos, R.loops), measure: (name) => loopLen(pos, R.loops[name]), span: span(pos) / FACTOR.bustSpan, toBust: toBust(pos) / FACTOR.shoulderToBust };
 }
 
 // Heights of key body levels (average y of each measurement loop) for placing pattern pieces.

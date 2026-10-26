@@ -169,6 +169,7 @@ table.pieces th { font-size: 11.5px; color: var(--muted); font-weight: 650; text
 .measure section { margin: 22px 0 }
 .mgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px }
 .mfield { display: grid; grid-template-columns: 1fr 104px; gap: 3px 12px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 11px 13px; box-shadow: var(--shadow-sm) }
+.mgrid.bust .mfield { grid-template-columns: 1fr 190px }
 .mfield span { font-weight: 600 }
 .mfield small { grid-column: 1 / -1; color: var(--muted); font-size: 12px }
 .mfield.need { border-color: var(--acc-line); box-shadow: inset 3px 0 var(--acc), var(--shadow-sm) }

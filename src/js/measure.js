@@ -4,7 +4,16 @@ import { FIELDS, checks, defaults } from './measure-data.js';
 import { TYPES } from './garments/index.js';
 import { fmt, parseLen, isMetric } from './units.js';
 import { esc } from './render.js';
-import { BUST_TYPES } from './sim/body.js';
+import { BUST, bustChoice } from './sim/body.js';
+
+// Bust on the 3D model: from the measurements, or simple choices. Only the model changes, never the pattern.
+function bustSection(m) {
+  const simple = bustChoice(m, 'mode')[0] === 'simple';
+  const field = ([key, label, ch]) => `<label class="mfield"><span>${label}</span><select data-f="b:${key}">${ch.map(([v, n]) => `<option value="${v}" ${bustChoice(m, key)[0] === v ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>`;
+  return `<section><h3>Bust on the 3D model</h3><p class="tip">${simple ? 'Pick the size, spacing and height from the lists. These only change the 3D model: the pattern still uses the measurements above.'
+    : 'Size comes from Bust − Underbust, spacing from Bust point to bust point, and height from Shoulder to bust point. Choose <b>Simple choices</b> to pick them from lists instead.'}</p>
+    <div class="mgrid bust">${BUST.filter((b) => !b[3] || simple).map(field).join('')}</div></section>`;
+}
 
 export function renderMeasure(el) {
   const P = S.project, prof = P.profiles.find((p) => p.id === S.profile) || P.profiles[0];
@@ -23,13 +32,13 @@ export function renderMeasure(el) {
     ${warn.length ? `<div class="warn">${warn.map((w) => `<div>⚠ ${esc(w)}</div>`).join('')}</div>` : ''}
     ${groups.map((gr) => `<section><h3>${gr}</h3><div class="mgrid">${FIELDS.filter((f) => f[0] === gr).map(([, k, label, tip]) => `
       <label class="mfield ${needs.has(k) ? 'need' : ''}"><span>${label}</span><input data-f="m:${k}" value="${esc(fmt(prof.m[k]))}"><small>${esc(tip)}</small></label>`).join('')}
-      ${gr === 'Upper body' ? `<label class="mfield"><span>Bust type (3D model)</span><select data-f="bustShape">${Object.entries(BUST_TYPES).map(([k, [n]]) => `<option value="${k}" ${(prof.m.bustShape || 'average') === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select><small>Shapes the bust on the 3D model. Its size comes from Bust − Underbust, how far apart from Bust point to bust point, and how high from Shoulder to bust point.</small></label>` : ''}</div></section>`).join('')}
+</div></section>${gr === 'Upper body' ? bustSection(prof.m) : ''}`).join('')}
     <div class="btns"><button data-a="reset">Reset ${esc(prof.name)} to average sizes</button></div>
   </div>`;
   el.onchange = (e) => {
     const f = e.target.dataset.f;
     if (f === 'profile') { S.profile = e.target.value; renderMeasure(el); return; }
-    if (f === 'bustShape') { prof.m.bustShape = e.target.value; commit(); return; } // 3D only: the patterns don't change
+    if (f?.startsWith('b:')) { prof.m.bust3d = { ...prof.m.bust3d, [f.slice(2)]: e.target.value }; commit(); return; } // 3D only: the patterns don't change
     if (!f?.startsWith('m:')) return;
     const v = parseLen(e.target.value);
     if (!(v > 0)) { e.target.value = fmt(prof.m[f.slice(2)]); return; }
