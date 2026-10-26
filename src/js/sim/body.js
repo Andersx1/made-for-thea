@@ -74,7 +74,7 @@ function turnBreasts(pos, R, inward, down) {
   for (const [side, sg] of [[0, 1], [1, -1]]) {
     const n = R.nipples[side], px = pos[n * 3], py = pos[n * 3 + 1] + 5; // hinge: the upper attachment, above the nipple
     // the chest wall: the front of the fold under the breast, which stays where it is
-    const pz = Math.max(...ub.filter((i) => Math.abs(pos[i * 3] - px) < 6).map((i) => pos[i * 3 + 2])), depth = Math.max(3, pos[n * 3 + 2] - pz);
+    const pz = Math.max(...ub.filter((i) => Math.abs(pos[i * 3] - px) < 6).map((i) => pos[i * 3 + 2])), depth = Math.max(5, pos[n * 3 + 2] - pz); // at least 5 cm, so a small breast's turn eases into the chest
     for (let k = 0; k < idx.length; k++) {
       const i = idx[k] * 3;
       if (Math.sign(pos[i]) !== sg) continue;
@@ -124,7 +124,9 @@ export function makeBody(m0) {
   const diff = m.bust - m.underbust, cup = Math.max(-1, Math.min(1, (diff - 15) / 7)); // MakeHuman's cup shape; bigger busts carry on through the bust measurement
   // Gravity: from a C cup up, bigger breasts sit lower, fuller below and softer even when "natural"; the lift choice adds to that.
   const heavy = Math.max(0, Math.min(1, (diff - 17) / 10)), clamp1 = (x) => Math.max(-1, Math.min(1, x));
-  const [droop, firmL, lower, fullerBelow] = c('lift'), firm = clamp1(firmL - 0.4 * heavy), full = clamp1(c('fullness')[0] - fullerBelow - 0.4 * heavy);
+  // Droop is gravity on the breast's weight: a small breast barely sags (it softens and its nipple points down
+  // instead), and turning or lowering it as much as a big one creases the chest under it.
+  const mass = Math.max(0.3, Math.min(1, (diff - 9) / 10)), [tilt, firmL, lowerL, fullerL] = c('lift'), droop = tilt * mass, lower = lowerL * mass, fullerBelow = fullerL * mass, firm = clamp1(firmL - 0.4 * heavy), full = clamp1(c('fullness')[0] - fullerBelow - 0.4 * heavy);
   // where the breasts sit (measurements fit this again below); past about one step MakeHuman's shape creases the ribs
   const [up] = simple ? c('height') : [0], trans = Math.max(-1.1, Math.min(1.2, up - lower - 0.5 * heavy));
   // MakeHuman's cup × firmness grid: blend the corners around (cup, firmness); average/average is the base.
@@ -137,7 +139,7 @@ export function makeBody(m0) {
   addTarget(pos, nPoint >= 0 ? T['nipple-point-incr'] : T['nipple-point-decr'], Math.abs(nPoint));
   addTarget(pos, trans >= 0 ? T['breast-trans-up'] : T['breast-trans-down'], Math.abs(trans));
   turnBreasts(pos, R, inward, droop);
-  aimNipples(pos, R, 12, Math.min(12, 10 * (1 - lower / 1.5))); // drooping breasts' nipples point down
+  aimNipples(pos, R, 12, Math.min(12, 10 * (1 - lowerL / 1.5))); // drooping breasts' nipples point down
   // Height (solved by secant on the height targets); repeated at the end because length targets change it.
   const solveHeight = () => { for (let it = 0; it < 3; it++) {
     const h0 = heightOf(pos), up = T['female-young-averagemuscle-averageweight-maxheight'], dn = T['female-young-averagemuscle-averageweight-minheight'], t = m.height > h0 ? up : dn;
