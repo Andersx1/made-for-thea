@@ -19,6 +19,9 @@ const TARGETS = [
   'macrodetails/universal-female-young-averagemuscle-maxweight', 'macrodetails/universal-female-young-averagemuscle-minweight',
   'macrodetails/height/female-young-averagemuscle-averageweight-maxheight', 'macrodetails/height/female-young-averagemuscle-averageweight-minheight',
   'breast/female-young-averagemuscle-averageweight-maxcup-averagefirmness', 'breast/female-young-averagemuscle-averageweight-mincup-averagefirmness',
+  // Bust shape: cup × firmness corners, then spread, height, upper/lower fullness and projection.
+  ...['averagecup', 'maxcup', 'mincup'].flatMap((c) => ['maxfirmness', 'minfirmness'].map((f) => `breast/female-young-averagemuscle-averageweight-${c}-${f}`)),
+  ...['dist-incr', 'dist-decr', 'trans-up', 'trans-down', 'volume-vert-up', 'volume-vert-down', 'point-incr', 'point-decr'].map((k) => `breast/breast-${k}`),
 ];
 
 async function get(rel) {

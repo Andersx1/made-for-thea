@@ -4,6 +4,7 @@ import { FIELDS, checks, defaults } from './measure-data.js';
 import { TYPES } from './garments/index.js';
 import { fmt, parseLen, isMetric } from './units.js';
 import { esc } from './render.js';
+import { BUST_TYPES } from './sim/body.js';
 
 export function renderMeasure(el) {
   const P = S.project, prof = P.profiles.find((p) => p.id === S.profile) || P.profiles[0];
@@ -21,12 +22,14 @@ export function renderMeasure(el) {
       ${needs.size ? `<span class="needkey">Highlighted</span> = used by your ${esc(g.name.toLowerCase())}.` : ''}</p>
     ${warn.length ? `<div class="warn">${warn.map((w) => `<div>⚠ ${esc(w)}</div>`).join('')}</div>` : ''}
     ${groups.map((gr) => `<section><h3>${gr}</h3><div class="mgrid">${FIELDS.filter((f) => f[0] === gr).map(([, k, label, tip]) => `
-      <label class="mfield ${needs.has(k) ? 'need' : ''}"><span>${label}</span><input data-f="m:${k}" value="${esc(fmt(prof.m[k]))}"><small>${esc(tip)}</small></label>`).join('')}</div></section>`).join('')}
+      <label class="mfield ${needs.has(k) ? 'need' : ''}"><span>${label}</span><input data-f="m:${k}" value="${esc(fmt(prof.m[k]))}"><small>${esc(tip)}</small></label>`).join('')}
+      ${gr === 'Upper body' ? `<label class="mfield"><span>Bust type (3D model)</span><select data-f="bustShape">${Object.entries(BUST_TYPES).map(([k, [n]]) => `<option value="${k}" ${(prof.m.bustShape || 'average') === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select><small>Shapes the bust on the 3D model. Its size comes from Bust − Underbust, how far apart from Bust point to bust point, and how high from Shoulder to bust point.</small></label>` : ''}</div></section>`).join('')}
     <div class="btns"><button data-a="reset">Reset ${esc(prof.name)} to average sizes</button></div>
   </div>`;
   el.onchange = (e) => {
     const f = e.target.dataset.f;
     if (f === 'profile') { S.profile = e.target.value; renderMeasure(el); return; }
+    if (f === 'bustShape') { prof.m.bustShape = e.target.value; commit(); return; } // 3D only: the patterns don't change
     if (!f?.startsWith('m:')) return;
     const v = parseLen(e.target.value);
     if (!(v > 0)) { e.target.value = fmt(prof.m[f.slice(2)]); return; }
