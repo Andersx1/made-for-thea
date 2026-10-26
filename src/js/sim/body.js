@@ -45,7 +45,7 @@ export const BUST = [
   ['mode', 'Shape it from', [['measure', 'My measurements'], ['simple', 'Simple choices']], 'measure'],
   ['cup', 'Cup size', CUPS.map(([c, d]) => [c, `${c} (${d} cm)`, d]), nearestCup, 'simple'],
   // nipple-to-nipple distance, cm away from the average for her size
-  ['set', 'Spacing', [['close', 'Close set', -3], ['closeish', 'Slightly close', -1.5], ['average', 'Average', 0], ['wideish', 'Slightly wide', 1.5], ['wide', 'Wide set', 3]], 'average', 'simple'],
+  ['set', 'Spacing', [['close', 'Close set', -3], ['closeish', 'Slightly close', -1.5], ['average', 'Average', 0], ['wideish', 'Slightly wide', 1], ['wide', 'Wide set', 2]], 'average', 'simple'],
   // where the breasts sit on the chest (MakeHuman's breast-trans target, about 1.4 cm per step)
   ['height', 'Position on the chest', [['high', 'High', 1.2], ['average', 'Average', 0], ['low', 'Low', -1.4]], 'average', 'simple'],
   // droop, mostly from MakeHuman's own sculpted shapes, which move the fold under the breast down with it:

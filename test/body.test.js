@@ -28,7 +28,7 @@ test('the bust follows its spread and height, and the bust choices keep the bust
   // Every choice builds a body that matches its measurements; with simple choices the bust is the underbust plus the cup.
   for (const [key, , ch] of BUST) for (const [v] of ch) check(modelMeasures({ ...defaults(), bust3d: { mode: 'simple', [key]: v } }), { mode: 'simple', [key]: v });
   const at = (bust3d) => makeBody({ ...defaults(), bust3d: { mode: 'simple', ...bust3d } }), y = (b) => b.pos[b.nipples[0] * 3 + 1];
-  assert.ok(at({ set: 'wide' }).span > at({ set: 'close' }).span + 4, 'wide set is wider apart than close set');
+  assert.ok(at({ set: 'wide' }).span > at({ set: 'close' }).span + 3.5, 'wide set is wider apart than close set');
   assert.ok(at({ height: 'low' }).toBust > at({ height: 'high' }).toBust + 2, 'low set sits lower than high set');
   assert.ok(y(at({ lift: 'very' })) < y(at({ lift: 'natural' })) - 4 && y(at({ lift: 'lifted' })) > y(at({ lift: 'natural' })), 'droop lowers the nipples, lifted raises them');
   assert.ok(at({ cup: 'H' }).span > at({ cup: 'A' }).span, 'bigger cups sit wider apart');
