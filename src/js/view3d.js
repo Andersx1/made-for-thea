@@ -5,7 +5,7 @@ import { S, commit, garment, profileOf } from './store.js';
 import { esc } from './render.js';
 import { fmt } from './units.js';
 import { makeBody } from './sim/body.js';
-import { buildSDF, vertexNormals } from './sim/sdf.js';
+import { buildSDF, vertexNormals, loopSubdivide } from './sim/sdf.js';
 import { assemble, bandMesh, simType } from './sim/garment.js';
 import { makeSim, FABRICS } from './sim/solver.js';
 
@@ -58,10 +58,10 @@ function draw() { if (V && V.renderer.domElement.isConnected) { placeCamera(); V
 function showBody(B) {
   if (V.bodyKey === B.k) return;
   V.bodyKey = B.k; V.bodyRoot.clear();
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(B.body.pos, 3));
-  g.setAttribute('normal', new THREE.BufferAttribute(vertexNormals(B.body.pos, B.body.tris), 3));
-  g.setIndex(new THREE.BufferAttribute(new Uint32Array(B.body.tris), 1));
+  const g = new THREE.BufferGeometry(), S = loopSubdivide(B.body.pos, B.body.tris); // drawn smoother than the collision mesh
+  g.setAttribute('position', new THREE.BufferAttribute(S.pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(vertexNormals(S.pos, S.tris), 3));
+  g.setIndex(new THREE.BufferAttribute(S.tris, 1));
   const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xd9ccc4, roughness: 0.75 }));
   mesh.castShadow = mesh.receiveShadow = true;
   V.bodyRoot.add(mesh);

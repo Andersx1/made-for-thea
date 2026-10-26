@@ -19,6 +19,38 @@ export function vertexNormals(pos, tris) {
 }
 
 // pads: [{verts, r}] — those vertices are treated as balls of radius r (padding thin parts like fingers).
+// One level of Loop subdivision, for drawing the body smoothly (the collisions keep the original mesh):
+// every triangle becomes four, and points move towards a smooth surface through the old ones.
+// Points on an open edge of the mesh (e.g. around the eyes) stay where they are.
+export function loopSubdivide(pos, tris) {
+  const nv = pos.length / 3, edges = new Map(), key = (a, b) => (a < b ? a * nv + b : b * nv + a);
+  const nbr = Array.from({ length: nv }, () => new Set());
+  for (let t = 0; t < tris.length; t += 3) for (let e = 0; e < 3; e++) {
+    const a = tris[t + e], b = tris[t + (e + 1) % 3], c = tris[t + (e + 2) % 3], k = key(a, b);
+    nbr[a].add(b); nbr[b].add(a);
+    const E = edges.get(k); if (E) E.opp.push(c); else edges.set(k, { a, b, opp: [c] });
+  }
+  const out = new Float32Array((nv + edges.size) * 3), open = new Uint8Array(nv);
+  for (const E of edges.values()) if (E.opp.length < 2) open[E.a] = open[E.b] = 1;
+  for (let v = 0; v < nv; v++) {
+    const n = nbr[v].size;
+    if (open[v] || n < 3) { out.set(pos.subarray(v * 3, v * 3 + 3), v * 3); continue; }
+    const beta = n === 3 ? 3 / 16 : 3 / (8 * n);
+    for (let k = 0; k < 3; k++) { let sum = 0; for (const u of nbr[v]) sum += pos[u * 3 + k]; out[v * 3 + k] = (1 - n * beta) * pos[v * 3 + k] + beta * sum; }
+  }
+  let next = nv;
+  for (const E of edges.values()) {
+    E.i = next++;
+    for (let k = 0; k < 3; k++) out[E.i * 3 + k] = E.opp.length === 2 ? (3 * (pos[E.a * 3 + k] + pos[E.b * 3 + k]) + pos[E.opp[0] * 3 + k] + pos[E.opp[1] * 3 + k]) / 8 : (pos[E.a * 3 + k] + pos[E.b * 3 + k]) / 2;
+  }
+  const T = new Uint32Array(tris.length * 4), mid = (a, b) => edges.get(key(a, b)).i;
+  for (let t = 0, o = 0; t < tris.length; t += 3) {
+    const [a, b, c] = [tris[t], tris[t + 1], tris[t + 2]], ab = mid(a, b), bc = mid(b, c), ca = mid(c, a);
+    T.set([a, ab, ca, ab, b, bc, ca, bc, c, ab, bc, ca], o); o += 12;
+  }
+  return { pos: out, tris: T };
+}
+
 export function buildSDF(pos, tris, { cell = 1, band = 3, pads = [] } = {}) {
   let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
   for (let i = 0; i < pos.length; i += 3) { x0 = Math.min(x0, pos[i]); x1 = Math.max(x1, pos[i]); y0 = Math.min(y0, pos[i + 1]); y1 = Math.max(y1, pos[i + 1]); z0 = Math.min(z0, pos[i + 2]); z1 = Math.max(z1, pos[i + 2]); }

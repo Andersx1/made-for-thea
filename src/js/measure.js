@@ -10,9 +10,9 @@ import { BUST, bustChoice } from './sim/body.js';
 function bustSection(m) {
   const simple = bustChoice(m, 'mode')[0] === 'simple';
   const field = ([key, label, ch]) => `<label class="mfield"><span>${label}</span><select data-f="b:${key}">${ch.map(([v, n]) => `<option value="${v}" ${bustChoice(m, key)[0] === v ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>`;
-  return `<section><h3>Bust on the 3D model</h3><p class="tip">${simple ? 'Pick the size, spacing and height from the lists. These only change the 3D model: the pattern still uses the measurements above.'
+  return `<section><h3>Bust on the 3D model</h3><p class="tip">${simple ? 'Pick the size, spacing and height from the lists. Cup size is how much bigger the bust is than the underbust, in cm (B is 15, D is 19). These only change the 3D model: the pattern still uses the measurements above.'
     : 'Size comes from Bust − Underbust, spacing from Bust point to bust point, and height from Shoulder to bust point. Choose <b>Simple choices</b> to pick them from lists instead.'}</p>
-    <div class="mgrid bust">${BUST.filter((b) => !b[3] || simple).map(field).join('')}</div></section>`;
+    <div class="mgrid bust">${BUST.filter((b) => !b[4] || simple).map(field).join('')}</div></section>`;
 }
 
 export function renderMeasure(el) {
