@@ -36,36 +36,32 @@ const MAP = [
 const FACTOR = { backLength: 0.97, waistToHip: 0.92, shoulderLength: 0.95, armLength: 0.92, bustSpan: 1, shoulderToBust: 0.98 };
 
 // ---------- the bust ----------
-// Options for the bust on the 3D model: [key, label, [[value, label, ...settings]], default, shown only in this mode].
+// Options for the bust on the 3D model: [key, label, [[value, label, ...settings]]]; the first choice is the default.
 // Calibrated against real proportions (nipple-to-nipple distance, droop measured at the fold under the breast,
 // how far the breasts point outward), and kept moderate so even the extremes together look like a real body.
+// Size, spacing and position follow her measurements unless one is picked (3D only; the pattern keeps the measurements).
 const CUPS = [['AA', 11], ['A', 13], ['B', 15], ['C', 17], ['D', 19], ['E', 21], ['F', 23], ['G', 25], ['H', 27]]; // bust − underbust, cm
-const nearestCup = (m) => CUPS.reduce((a, c) => (Math.abs(c[1] - (m.bust - m.underbust)) < Math.abs(a[1] - (m.bust - m.underbust)) ? c : a))[0];
+const MINE = ['mine', 'My measurements'];
 export const BUST = [
-  ['mode', 'Shape it from', [['measure', 'My measurements'], ['simple', 'Simple choices']], 'measure'],
-  ['cup', 'Cup size', CUPS.map(([c, d]) => [c, `${c} (${d} cm)`, d]), nearestCup, 'simple'],
+  ['cup', 'Cup size', [MINE, ...CUPS.map(([c, d]) => [c, `${c} (${d} cm)`, d])]],
   // nipple-to-nipple distance, cm away from the average for her size
-  ['set', 'Spacing', [['close', 'Close set', -3], ['closeish', 'Slightly close', -1.5], ['average', 'Average', 0], ['wideish', 'Slightly wide', 1], ['wide', 'Wide set', 2]], 'average', 'simple'],
+  ['set', 'Spacing', [MINE, ['close', 'Close set', -2.5], ['average', 'Average', 0], ['wide', 'Wide set', 2]]],
   // where the breasts sit on the chest (MakeHuman's breast-trans target, about 1.4 cm per step)
-  ['height', 'Position on the chest', [['high', 'High', 1.2], ['average', 'Average', 0], ['low', 'Low', -1.4]], 'average', 'simple'],
+  ['height', 'Position on the chest', [MINE, ['high', 'High', 1.2], ['average', 'Average', 0], ['low', 'Low', -1.4]]],
   // droop, mostly from MakeHuman's own sculpted shapes, which move the fold under the breast down with it:
   // [tilt (degrees, a gentle turn about the upper attachment), firmness (1 firm … -1 soft), lower (breast-trans
   // steps down), fuller below (volume steps)]. Very droopy brings the nipple to about the fold.
-  ['lift', 'Lift / droop', [['lifted', 'Lifted (like in a supportive bra)', -4, 1, -0.5, -0.4], ['natural', 'Natural', 0, 0, 0, 0], ['slight', 'Slight droop', 3, -0.5, 0.4, 0.3], ['moderate', 'Moderate droop', 6, -1, 0.9, 0.6], ['very', 'Very droopy', 12, -1, 1, 1]], 'natural'],
+  ['lift', 'Droop', [['natural', 'Natural', 0, 0, 0, 0], ['lifted', 'Lifted (like in a supportive bra)', -4, 1, -0.5, -0.4], ['moderate', 'Some droop', 6, -1, 0.9, 0.6], ['very', 'Very droopy', 12, -1, 1, 1]]],
+  ['fullness', 'Shape', [['even', 'Even', 0], ['top', 'Round (fuller on top)', 1], ['bottom', 'Teardrop (fuller below)', -1]]],
   // how far the breasts point outward (degrees turned in from the base body)
-  ['direction', 'Pointing', [['forward', 'Forward', 14], ['slight', 'Slightly outward', 7], ['outward', 'Outward (east-west)', -2]], 'slight'],
-  ['fullness', 'Fullness', [['even', 'Even', 0], ['top', 'Fuller on top (round)', 1], ['bottom', 'Fuller below (teardrop)', -1]], 'even'],
-  ['projection', 'Projection', [['less', 'Less (flatter)', -0.5], ['average', 'Average', 0], ['more', 'More (pointed)', 0.6]], 'average'],
-  ['nippleSize', 'Nipple and areola size', [['small', 'Small', -0.7], ['average', 'Average', 0], ['large', 'Large', 0.7]], 'average'],
-  ['nipplePoint', 'Nipple projection', [['flat', 'Flat', -0.7], ['average', 'Average', 0], ['prominent', 'Prominent', 0.7]], 'average'],
+  ['direction', 'Pointing', [['slight', 'Slightly outward', 7], ['forward', 'Forward', 14], ['outward', 'Outward', -2]]],
+  // [areola size, nipple projection]
+  ['nipples', 'Nipples', [['average', 'Average', 0, 0], ['small', 'Small and flat', -0.7, -0.5], ['large', 'Large', 0.7, 0.3], ['prominent', 'Prominent', 0, 0.7]]],
 ];
-export function bustChoice(m, key) {
-  const [, , ch, def] = BUST.find((b) => b[0] === key), d = typeof def === 'function' ? def(m) : def;
-  return ch.find((c) => c[0] === m.bust3d?.[key]) || ch.find((c) => c[0] === d);
-}
-const simpleBust = (m) => bustChoice(m, 'mode')[0] === 'simple';
-// The measurements the model is built to: with simple choices, the bust is the underbust plus the chosen cup.
-export const modelMeasures = (m) => (simpleBust(m) ? { ...m, bust: m.underbust + bustChoice(m, 'cup')[2] } : m);
+export function bustChoice(m, key) { const ch = BUST.find((b) => b[0] === key)[2]; return ch.find((c) => c[0] === m.bust3d?.[key]) || ch[0]; }
+const mine = (m, key) => bustChoice(m, key) === MINE;
+// The measurements the model is built to: with a cup size picked, the bust is the underbust plus the cup.
+export const modelMeasures = (m) => (mine(m, 'cup') ? m : { ...m, bust: m.underbust + bustChoice(m, 'cup')[2] });
 
 // Turns each breast about its base on the chest wall: inward (towards pointing forward) and down (droop),
 // weighted by the breast area so the tissue bends smoothly into the chest. Angles in degrees.
@@ -114,13 +110,13 @@ function aimNipples(pos, R, inward, up) {
 }
 
 export function makeBody(m0) {
-  const R = raw(), pos = Float32Array.from(R.base), T = R.targets, m = modelMeasures(m0), simple = simpleBust(m0);
+  const R = raw(), pos = Float32Array.from(R.base), T = R.targets, m = modelMeasures(m0);
   for (const k of ['african-female-young', 'asian-female-young', 'caucasian-female-young']) addTarget(pos, T[k], 1 / 3); // female, young adult, mixed ethnicity
   const weights = {};
   // Overall build: heavier/lighter from the hip-to-height relationship, then cup size from bust − underbust.
   const build = Math.max(-1, Math.min(1, (m.hip / m.height - 0.6) / 0.08));
   addTarget(pos, build >= 0 ? T['universal-female-young-averagemuscle-maxweight'] : T['universal-female-young-averagemuscle-minweight'], Math.abs(build));
-  const c = (key) => bustChoice(m0, key).slice(2), [inward] = c('direction'), [point] = c('projection'), [nSize] = c('nippleSize'), [nPoint] = c('nipplePoint');
+  const c = (key) => bustChoice(m0, key).slice(2), [inward] = c('direction'), [nSize, nPoint] = c('nipples');
   const diff = m.bust - m.underbust, cup = Math.max(-1, Math.min(1, (diff - 15) / 7)); // MakeHuman's cup shape; bigger busts carry on through the bust measurement
   // Gravity: from a C cup up, bigger breasts sit lower, fuller below and softer even when "natural"; the lift choice adds to that.
   const heavy = Math.max(0, Math.min(1, (diff - 17) / 10)), clamp1 = (x) => Math.max(-1, Math.min(1, x));
@@ -128,13 +124,12 @@ export function makeBody(m0) {
   // instead), and turning or lowering it as much as a big one creases the chest under it.
   const mass = Math.max(0.3, Math.min(1, (diff - 9) / 10)), [tilt, firmL, lowerL, fullerL] = c('lift'), droop = tilt * mass, lower = lowerL * mass, fullerBelow = fullerL * mass, firm = clamp1(firmL - 0.4 * heavy), full = clamp1(c('fullness')[0] - fullerBelow - 0.4 * heavy);
   // where the breasts sit (measurements fit this again below); past about one step MakeHuman's shape creases the ribs
-  const [up] = simple ? c('height') : [0], trans = Math.max(-1.1, Math.min(1.2, up - lower - 0.5 * heavy));
+  const [up = 0] = c('height'), trans = Math.max(-1.1, Math.min(1.2, up - lower - 0.5 * heavy));
   // MakeHuman's cup × firmness grid: blend the corners around (cup, firmness); average/average is the base.
   for (const [c, wc] of [['average', 1 - Math.abs(cup)], [cup >= 0 ? 'max' : 'min', Math.abs(cup)]])
     for (const [f, wf] of [['average', 1 - Math.abs(firm)], [firm >= 0 ? 'max' : 'min', Math.abs(firm)]])
       if (c !== 'average' || f !== 'average') addTarget(pos, T[`female-young-averagemuscle-averageweight-${c}cup-${f}firmness`], wc * wf);
   addTarget(pos, full >= 0 ? T['breast-volume-vert-up'] : T['breast-volume-vert-down'], Math.abs(full));
-  addTarget(pos, point >= 0 ? T['breast-point-incr'] : T['breast-point-decr'], Math.abs(point));
   addTarget(pos, nSize >= 0 ? T['nipple-size-incr'] : T['nipple-size-decr'], Math.abs(nSize));
   addTarget(pos, nPoint >= 0 ? T['nipple-point-incr'] : T['nipple-point-decr'], Math.abs(nPoint));
   addTarget(pos, trans >= 0 ? T['breast-trans-up'] : T['breast-trans-down'], Math.abs(trans));
@@ -162,13 +157,13 @@ export function makeBody(m0) {
   const nk = R.loops['shoulder-dist'][0]; // side of the neck
   const [nl, nr] = R.nipples, span = (q) => q[nl * 3] - q[nr * 3];
   const toBust = (q) => Math.hypot(q[nk * 3] - q[nl * 3], q[nk * 3 + 1] - q[nl * 3 + 1], q[nk * 3 + 2] - q[nl * 3 + 2]);
-  // Spacing: her bust point to bust point, or with simple choices the average for her size (wider for bigger cups) ± the choice.
-  const wantSpan = simple ? m.underbust * 0.245 + (diff - 15) * 0.3 + c('set')[0] : m.bustSpan * FACTOR.bustSpan;
+  // Spacing: her bust point to bust point, or the average for her size (wider for bigger cups) ± the choice.
+  const wantSpan = mine(m0, 'set') ? m.bustSpan * FACTOR.bustSpan : m.underbust * 0.245 + (diff - 15) * 0.3 + c('set')[0];
   // Measurements: a few rounds, because neighbouring targets (bust/underbust, waist/hip) interact.
   for (let round = 0; round < 4; round++) {
     // Bust position first, so the circumferences are fitted last; bust shapes only within their designed range (beyond it they distort).
     if (wantSpan > 0) fit('bust-span', wantSpan, span, [T['breast-dist-incr']], [T['breast-dist-decr']], 1.5);
-    if (!simple && m.shoulderToBust > 0) fit('bust-height', m.shoulderToBust * FACTOR.shoulderToBust, toBust, [T['breast-trans-down']], [T['breast-trans-up']], 1);
+    if (mine(m0, 'height') && m.shoulderToBust > 0) fit('bust-height', m.shoulderToBust * FACTOR.shoulderToBust, toBust, [T['breast-trans-down']], [T['breast-trans-up']], 1);
     for (const [key, names] of MAP) {
       const list = [names].flat(), want = m[key] * (FACTOR[key] || 1);
       if (!(want > 0) || list.some((n) => !R.loops[n])) continue;
