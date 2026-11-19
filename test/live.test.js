@@ -16,7 +16,7 @@ const lowest = (x) => { let lo = Infinity; for (let i = 1; i < x.length; i += 3)
 const inside = (sys) => { const probe = [0, 0, 0, 0]; let n = 0; for (let i = 0; i < sys.N; i++) { sample(F, sys.x[i * 3], sys.x[i * 3 + 1], sys.x[i * 3 + 2], probe); if (probe[0] < -0.3) n++; } return n; };
 // Run a job on a runner to the end; resolves with the frames it reported.
 const finish = (send, msg) => new Promise((res, rej) => { const frames = []; send.on = (f) => { if (f.type === 'failed') return rej(new Error(f.why)); frames.push(f); if (f.done) res(frames); }; send(msg); });
-const runnerPair = () => { const send = (msg) => R.handle(msg), R = createRunner((f) => send.on?.(f), { slice: 200 }); return send; };
+const runnerPair = () => { const send = (msg) => R.handle(msg), R = createRunner((f) => send.on?.(f), { slice: 60 }); return send; };
 
 // One cold drape, shared by the tests below.
 const skirt = garmentOf('skirt'), cold = assemble(skirt, m, body, F);
