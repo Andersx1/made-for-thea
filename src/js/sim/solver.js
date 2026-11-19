@@ -16,7 +16,9 @@ export const FABRICS = {
   jersey: { name: 'Jersey knit', density: 0.018, bend: 4, stretch: 0.4, friction: 0.5 },
 };
 
-export function makeSim(sys, F, fabric = FABRICS.cotton, { thick = 0.5, sewTime = 0.5, settle = 3.2, gap = 0.9, self = true } = {}) {
+// warm: the cloth starts from a finished drape (after a pattern edit, or to be tugged), so it is already sewn
+// and hanging and only has to settle.
+export function makeSim(sys, F, fabric = FABRICS.cotton, { thick = 0.5, sewTime = 0.5, settle = 3.2, gap = 0.9, self = true, warm = false } = {}) {
   const { N } = sys, x = sys.x, prev = new Float32Array(x), v = new Float32Array(N * 3), w = new Float32Array(N);
   let wSum = 0;
   for (let i = 0; i < N; i++) { w[i] = sys.mass[i] > 0 ? 1 / (sys.mass[i] * fabric.density) : 0; wSum += w[i]; }
@@ -81,7 +83,24 @@ export function makeSim(sys, F, fabric = FABRICS.cotton, { thick = 0.5, sewTime 
       }
     }
   }
-  let t = 0, step = 0;
+  let t = warm ? sewTime * 1.6 : 0, step = 0, end = warm ? t + (warm === true ? 1.2 : warm) : settle; // warm: true, or how many seconds to settle for
+  const began = t;
+  // Holding the cloth: the points within a few cm of the one picked follow the hand, and the rest follows them.
+  let held = null; // { ids, off (each one's offset from the picked point), w (their weights, given back on letting go), p (where the hand is) }
+  function release() {
+    if (!held) return;
+    held.ids.forEach((j, k) => { w[j] = held.w[k]; for (let a = 0; a < 3; a++) { prev[j * 3 + a] = x[j * 3 + a]; v[j * 3 + a] = 0; } });
+    held = null; end = t + 1.5; // it settles again
+  }
+  function grab(i, radius = 3.5) {
+    release();
+    const ids = [];
+    for (let j = 0; j < N; j++) if (w[j] && Math.hypot(x[j * 3] - x[i * 3], x[j * 3 + 1] - x[i * 3 + 1], x[j * 3 + 2] - x[i * 3 + 2]) < radius) ids.push(j);
+    if (!ids.length) return;
+    held = { ids, off: ids.flatMap((j) => [x[j * 3] - x[i * 3], x[j * 3 + 1] - x[i * 3 + 1], x[j * 3 + 2] - x[i * 3 + 2]]), w: ids.map((j) => w[j]), p: [x[i * 3], x[i * 3 + 1], x[i * 3 + 2]] };
+    for (const j of ids) w[j] = 0; // nothing but the hand moves them
+    end = Infinity;
+  }
 
   // soft < 1 lets a link get shorter more easily than longer: gathers and eased seams bunch up
   // in pleats finer than the mesh, so squashing stands in for them.
@@ -97,7 +116,22 @@ export function makeSim(sys, F, fabric = FABRICS.cotton, { thick = 0.5, sewTime 
     }
   }
 
+  // A twirl: for a couple of seconds the cloth is flung outwards as if she were spinning (up to speed, held,
+  // slowing), about the upright line through the middle of the cloth. Then it settles.
+  let whirl = null; // { t0, cx, cz }
+  function spin() {
+    let cx = 0, cz = 0; for (let i = 0; i < N; i++) { cx += x[i * 3]; cz += x[i * 3 + 2]; }
+    whirl = { t0: t, cx: cx / N, cz: cz / N }; end = t + SPIN + 1.6;
+  }
   function substep(hs) {
+    if (whirl) {
+      const u = t - whirl.t0, rate = 6.5 * smooth(0, 0.6, u) * (1 - smooth(SPIN - 0.7, SPIN, u)), a = rate * rate * hs; // turns a second ≈ rate / 6.3
+      if (u >= SPIN) whirl = null; else for (let i = 0; i < N; i++) if (w[i]) { v[i * 3] += (x[i * 3] - whirl.cx) * a; v[i * 3 + 2] += (x[i * 3 + 2] - whirl.cz) * a; }
+    }
+    if (held) { // towards the hand, no faster than cloth can follow
+      const lim = 250 * hs;
+      held.ids.forEach((j, k) => { for (let a = 0; a < 3; a++) x[j * 3 + a] += Math.max(-lim, Math.min(lim, held.p[a] + held.off[k * 3 + a] - x[j * 3 + a])); });
+    }
     const g = 981 * smooth(sewTime * 0.6, sewTime * 1.6, t), damp = Math.exp(-(t < sewTime * 1.6 ? 12 : 1.2) * hs), vmax = 300;
     for (let i = 0; i < N; i++) {
       if (!w[i]) continue;
@@ -147,7 +181,9 @@ export function makeSim(sys, F, fabric = FABRICS.cotton, { thick = 0.5, sewTime 
   }
 
   return {
-    x, get t() { return t; }, get done() { return t >= settle; }, settle,
+    x, get t() { return t; }, get done() { return t >= end; }, settle,
+    get progress() { return end === Infinity ? 0 : Math.min(1, (t - began) / (end - began)); }, get held() { return !!held; },
+    grab, release, pull(p) { if (held) held.p = p; }, spin,
     // Advance one 60 fps frame of simulated time.
     frame(substeps = 16) { const hs = 1 / 60 / substeps; for (let s = 0; s < substeps; s++) substep(hs); },
     gap() { // largest remaining seam gap, cm
@@ -157,4 +193,5 @@ export function makeSim(sys, F, fabric = FABRICS.cotton, { thick = 0.5, sewTime 
     },
   };
 }
+const SPIN = 2.4; // seconds a twirl lasts
 function smooth(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }

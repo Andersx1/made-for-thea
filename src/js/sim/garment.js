@@ -2,7 +2,7 @@
 // become fabric, their meshes, where each starts around the body, and the seams, darts and
 // waist pins that hold them together. Body coordinates: cm, y up, front +z, her left side +x.
 import { meshPiece, unfold } from './mesh.js';
-import { rotate90, flipX, deleteNode, dist, bbox, mapPiece } from '../geom.js';
+import { rotate90, flipX, deleteNode, dist, bbox, mapPiece, outline } from '../geom.js';
 import { sample } from './sdf.js';
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -98,6 +98,7 @@ const halfLoop = (T) => T.S[T.S.length - 1];
 // ---------- which pieces become fabric ----------
 const TORSO = ['front', 'back', 'sidefront', 'sideback', 'frontyoke', 'backyoke'];
 export function frameOf(type, key) {
+  if (key.startsWith('attach:')) return 'attach';
   if (key === 'sleeve' && ['top', 'dress', 'jacket'].includes(type)) return 'sleeve';
   if (type === 'trousers' || type === 'jeans') return ['front', 'back', 'yoke'].includes(key) ? 'legs' : null;
   if (type === 'top' || type === 'jacket') return TORSO.includes(key) ? 'torso' : null;
@@ -115,12 +116,20 @@ export function frameOf(type, key) {
 export const ROLES = {
   'bodice-front': ['Bodice front', 'torso'], 'bodice-back': ['Bodice back', 'torso'], 'bodice-sidefront': ['Side front panel', 'torso'], 'bodice-sideback': ['Side back panel', 'torso'],
   sleeve: ['Sleeve', 'sleeve'], 'skirt-front': ['Skirt front', 'skirt'], 'skirt-back': ['Skirt back', 'skirt'], 'legs-front': ['Trouser front', 'legs'], 'legs-back': ['Trouser back', 'legs'],
+  // No place of its own on the body: it starts along the edges it's sewn to (see "seams of your own" in assemble).
+  attach: ['Sewn-on piece (collar, cuff, waistband, ruffle…)', 'attach'],
+  // Not cloth of its own in 3D: it lies flat on the piece it's sewn onto (p.on), wherever that goes.
+  patch: ['Pocket or patch (sewn flat onto a piece)', 'patch'],
 };
+// A pocket or patch: a piece with a place on another piece, p.on = { p: that piece's id, x, y (its top-left corner there, cm) }.
+// Drafted pocket pieces can be given one too.
+export const isPatch = (p) => !!p.on?.p && (!p.custom || p.role === 'patch');
 export const EDGES = {
   torso: [['side', 'Side seam'], ['shoulder', 'Shoulder'], ['armhole', 'Armhole'], ['centre', 'Centre seam'], ['princess', 'Panel seam'], ['hem', 'Bottom (joins a skirt)']],
   sleeve: [['cap', 'Sleeve cap (armhole)'], ['underarm', 'Underarm seam']],
   skirt: [['side', 'Side seam'], ['centre', 'Centre seam'], ['waist', 'Waist']],
   legs: [['side', 'Side seam'], ['inseam', 'Inside leg'], ['centre', 'Centre / crotch'], ['waist', 'Waist']],
+  attach: [], patch: [],
 };
 // Garments of your own pieces sew up as a top, skirt, dress or trousers depending on the pieces.
 export function simType(g) {
@@ -146,8 +155,8 @@ function upright(p, frame) {
 const faceOf = (key) => (key.includes('back') || key === 'yoke' ? -1 : 1); // +1 front, -1 back
 
 // A copy of the piece in its drafting frame (layout turns and flips undone).
-function drafted(p0) {
-  const p = structuredClone({ key: p0.key, nodes: p0.nodes, segs: p0.segs, marks: p0.marks || [], notches: [], grain: p0.grain, cut: p0.cut });
+function drafted(p0, extra = []) {
+  const p = structuredClone({ key: p0.key, nodes: p0.nodes, segs: p0.segs, marks: [...(p0.marks || []), ...extra], notches: [], grain: p0.grain, cut: p0.cut });
   if (p0.flipped) flipX(p);
   for (let i = 0; i < (4 - (p0.turns || 0)) % 4; i++) rotate90(p);
   return p;
@@ -226,28 +235,104 @@ function rulesFor(type, o) {
   return { rules: R, pins };
 }
 
+// For drawing stitch lines a little way in from an edge: for each point on a piece's edge, the
+// neighbouring point that lies most squarely inside the piece (inU), and how far in it is (inPerp, cm).
+function inward(M) {
+  const ring = [...new Set(M.runs.flatMap((r) => r.idx))], n = ring.length, on = new Set(ring), nbr = new Map(ring.map((v) => [v, new Set()]));
+  for (const t of M.tris) for (const a of t) if (on.has(a)) for (const b of t) if (b !== a) nbr.get(a).add(b);
+  M.inU = new Int32Array(M.pts.length).fill(-1); M.inPerp = new Float32Array(M.pts.length); M.nbr = nbr;
+  ring.forEach((v, k) => {
+    const a = M.pts[ring[(k - 1 + n) % n]], b = M.pts[ring[(k + 1) % n]], p = M.pts[v], tx = b.x - a.x, ty = b.y - a.y, tl = Math.hypot(tx, ty) || 1;
+    let best = 0;
+    for (const u of nbr.get(v)) {
+      const q = M.pts[u], perp = Math.abs((q.x - p.x) * ty - (q.y - p.y) * tx) / tl, score = perp / (dist(p, q) || 1) * (on.has(u) ? 0.5 : 1);
+      if (perp > 0.2 && score > best) { best = score; M.inU[v] = u; M.inPerp[v] = perp; }
+    }
+  });
+  return M;
+}
+
+// A piece's triangles (as one list of point numbers within the piece), wound so the front of each faces away
+// from the body: the inside can then be drawn in another colour, and the piece can stand in as a solid for
+// the next garment to lie on. The side is voted on by the whole piece: the skin's direction where it's near
+// the body, outward from the body's centre line elsewhere.
+export function outward(sys, I, F) {
+  const x = sys.x, T = I.pc.mesh.tris, probe = [0, 0, 0, 0];
+  let vote = 0;
+  for (const [a, b, c] of T) {
+    const A = (I.base + a) * 3, B = (I.base + b) * 3, C = (I.base + c) * 3;
+    const ux = x[B] - x[A], uy = x[B + 1] - x[A + 1], uz = x[B + 2] - x[A + 2], vx = x[C] - x[A], vy = x[C + 1] - x[A + 1], vz = x[C + 2] - x[A + 2];
+    const cx = (x[A] + x[B] + x[C]) / 3, cy = (x[A + 1] + x[B + 1] + x[C + 1]) / 3, cz = (x[A + 2] + x[B + 2] + x[C + 2]) / 3;
+    let o = [cx, 0, cz];
+    if (sample(F, cx, cy, cz, probe) && probe[0] < F.band - 0.1 && Math.hypot(probe[1], probe[2], probe[3]) > 0.3) o = [probe[1], probe[2], probe[3]];
+    const ol = Math.hypot(...o) || 1;
+    vote += ((uy * vz - uz * vy) * o[0] + (uz * vx - ux * vz) * o[1] + (ux * vy - uy * vx) * o[2]) / ol;
+  }
+  return vote < 0 ? T.flatMap(([a, b, c]) => [a, c, b]) : T.flat();
+}
+// Move every point of the cloth that is inside what it lies on out to just above the surface.
+export function liftOut(sys, F) {
+  const x = sys.x, probe = [0, 0, 0, 0];
+  let moved = 0;
+  for (let i = 0; i < sys.N; i++) {
+    let qx = x[i * 3], qy = x[i * 3 + 1], qz = x[i * 3 + 2], hit = false;
+    for (let it = 0; it < 40; it++) {
+      const inGrid = sample(F, qx, qy, qz, probe), d = probe[0], gl = Math.hypot(probe[1], probe[2], probe[3]);
+      if (!inGrid || d >= 0.6) break;
+      hit = true;
+      if (gl > 0.3) { const k = (0.65 - d) / gl; qx += probe[1] * k; qy += probe[2] * k; qz += probe[3] * k; }
+      else { const rl = Math.hypot(qx, qz) || 1; qx += qx / rl * 1.5; qz += qz / rl * 1.5; } // too deep to tell which way is out: away from the centre line
+    }
+    if (hit) { x[i * 3] = qx; x[i * 3 + 1] = qy; x[i * 3 + 2] = qz; moved++; }
+  }
+  return moved;
+}
+
+// Meshing a piece is the slow part of assembling a garment, and after a pattern edit all but one piece are
+// as they were, so meshes are kept by what the piece looked like (they are never changed once made).
+const MESHES = new Map();
+function meshOf(p, h) {
+  const key = JSON.stringify([p.nodes, p.segs, (p.marks || []).filter((mk) => mk.type === 'dart' || mk.type === 'pleat'), h]);
+  let M = MESHES.get(key);
+  if (!M) { M = inward(meshPiece(p, h)); MESHES.set(key, M); if (MESHES.size > 80) MESHES.delete(MESHES.keys().next().value); }
+  return M;
+}
+
 // ---------- assembly ----------
 // Returns { inst: [{key, pts2, tris, base}], x (Float32Array 3N initial positions), uv, mass,
-// stretch/bend (Int32 pairs + rest), seams [[i, j0, j1, t]] (i sewn to a spot between j0 and j1), pins [[i, x, y, z]] }.
-export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
+// stretch/bend (Int32 pairs + rest), seams [[i, j0, j1, t]] (i sewn to a spot between j0 and j1), pins [[i, x, y, z]],
+// lines / hems (chains of points along each seam and each open edge, for drawing them), inU / inPerp (see inward),
+// patches (pockets lying on the cloth: their own little mesh and what each point is tied to) }.
+export function assemble(g, m, body, F, { maxPoints = 7000, hMin = 1.6 } = {}) { // hMin: the finest the cloth's points are spaced, cm
   const B = bodyProxy(body), M = B.M;
   const type = simType(g);
   if (!type) return null;
   const { rules, pins: pinRule } = rulesFor(type, g.options);
-  const keyOf = (p) => (!p.custom ? p.key : ROLES[p.role] ? roleKey(type, p.role) : null);
+  const keyOf = (p) => (isPatch(p) || p.role === 'patch' ? null : !p.custom ? p.key : p.role === 'attach' ? `attach:${p.id ?? p.key}` : ROLES[p.role] ? roleKey(type, p.role) : null);
+  // Where each pocket sits on its host travels with the host as a mark of three points (a corner and the two
+  // directions of the pocket's own drawing), so it is turned, flipped and moved exactly as the host is.
+  const patchMarks = (host) => g.pieces.filter((q) => isPatch(q) && q.on.p === host.id && q !== host).map((q) => { const b = bbox(outline(q)), O = { x: q.on.x - b.x, y: q.on.y - b.y }; return { type: 'patch', id: q.id, pts: [O, { x: O.x + 1, y: O.y }, { x: O.x, y: O.y + 1 }] }; });
   const src = g.pieces.filter((p) => { const k = keyOf(p), f = k && frameOf(type, k); return f && (!p.custom || f === ROLES[p.role][1]); });
-  const pieces = src.map((p0) => {
-    const key = keyOf(p0), f = frameOf(type, key), d = drafted(p0);
-    if (p0.custom) { upright(d, f); d.key = key; d.own = true; }
-    return { key, frame: f, p: unfold(tidy(d, f, g.pieces)), cut: p0.cut || { n: 1 } };
+  let pieces = src.map((p0) => {
+    const key = keyOf(p0), f = frameOf(type, key), d = drafted(p0, patchMarks(p0));
+    if (p0.custom) { if (f !== 'attach') upright(d, f); d.key = key; d.own = true; }
+    return { key, id: p0.id, name: p0.name, frame: f, p: unfold(tidy(d, f, g.pieces)), cut: p0.cut || { n: 1 }, rev: !!p0.rev };
   });
+  // Sewn-on pieces come along only if their seams lead, piece by piece, to one that has a place on the body.
+  const sewsOf = (pc) => pc.p.segs.map((sg) => sg.sew).filter(Boolean), on = new Set(pieces.filter((pc) => pc.frame !== 'attach'));
+  for (let grew = true; grew;) {
+    grew = false;
+    const ids = new Set([...on].flatMap(sewsOf));
+    for (const pc of pieces) if (!on.has(pc) && sewsOf(pc).some((id) => ids.has(id))) { on.add(pc); grew = true; }
+  }
+  pieces = pieces.filter((pc) => on.has(pc));
   if (!pieces.length) return null;
   // Mesh density from the total fabric area.
   const areaOf = (p) => { let a = 0; const N = p.nodes; for (let i = 0; i < N.length; i++) { const q = N[i], r = N[(i + 1) % N.length]; a += q.x * r.y - r.x * q.y; } return Math.abs(a / 2); };
   const copies = (pc) => (pc.p.unfolded ? 1 : pc.frame === 'circle' ? pc.cut.n : pc.frame === 'tier' ? 2 : pc.cut.n >= 2 ? 2 : 1);
   const total = pieces.reduce((a, pc) => a + areaOf(pc.p) * copies(pc), 0) * 1.25; // curves add a little
-  const h = clamp(Math.sqrt(total / (0.866 * maxPoints)), 1.6, 3.2);
-  for (const pc of pieces) { pc.mesh = meshPiece(pc.p, h); pc.kx = pc.p.shirred ? 1 / 1.8 : 1; } // shirring elastic pulls the back in
+  const h = clamp(Math.ceil(Math.sqrt(total / (0.866 * maxPoints)) * 20) / 20, hMin, 3.2); // in steps of half a millimetre, so a small edit keeps the spacing
+  for (const pc of pieces) { pc.mesh = meshOf(pc.p, h); pc.kx = pc.p.shirred ? 1 / 1.8 : 1; } // shirring elastic pulls the back in
 
   // Instances: unfolded pieces once, mirrored pairs as left (+x) and right copies, circle panels n times.
   const inst = [];
@@ -274,6 +359,7 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
   const group = (I) => (I.frame === 'tier' ? I.key : I.frame === 'sleeve' || I.frame === 'torso' || I.frame === 'legs' ? I.frame : 'skirt'); // each tier is its own girth
   const G = {};
   for (const I of inst) {
+    if (I.frame === 'attach') continue; // sewn-on pieces don't wrap the body
     const gk = group(I), T = (G[gk] ||= { rows: new Map(), xcen: { 1: new Map(), '-1': new Map() } });
     const poly = rowsOf(I), ys = poly.map((q) => q.y);
     if (I.frame === 'circle') {
@@ -358,7 +444,7 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
     let Lb = 0; for (let k = 1; k <= 20; k++) Lb += len(sub(bez(k / 20), bez((k - 1) / 20)));
     const sp = g.pieces.find((q) => q.key === 'strap'), L = sp ? Math.max(...sp.nodes.map((q) => q.y)) - Math.min(...sp.nodes.map((q) => q.y)) : Lb;
     const p = { key: 'strapsim', nodes: [{ x: 0, y: 0 }, { x: sw, y: 0 }, { x: sw, y: L }, { x: 0, y: L }], segs: ['end1', 'side', 'end2', 'side'].map((name) => ({ name, side: 1 })), marks: [], grain: { a: { x: sw / 2, y: 0 }, b: { x: sw / 2, y: L } } };
-    const pc = { key: 'strapsim', frame: 'strap', p, mesh: meshPiece(p, Math.min(h, sw / 2)), kx: 1, bez, L, sw };
+    const pc = { key: 'strapsim', name: 'Straps', frame: 'strap', p, mesh: inward(meshPiece(p, Math.min(h, sw / 2))), kx: 1, bez, L, sw };
     for (let k = 0; k < 2; k++) inst.push({ pc, key: 'strapsim', frame: 'strap', mirror: k === 1, k, n: 2, face: 1 });
     strap = { fa, ba, sw };
   }
@@ -371,7 +457,7 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
   for (const I of inst) {
     const { pts, tris } = I.pc.mesh, gr = I.pc.p.grain, gu = gr ? [gr.b.x - gr.a.x, gr.b.y - gr.a.y] : [0, 1], gl = Math.hypot(...gu) || 1, gv = [gu[0] / gl, gu[1] / gl];
     pts.forEach((q, i) => {
-      const P = placeAny(I, q), j = I.base + i;
+      const P = I.frame === 'attach' ? [0, 0, 0] : placeAny(I, q), j = I.base + i; // sewn-on pieces are placed once what they're sewn to is
       x[j * 3] = I.mirror ? -P[0] : P[0]; x[j * 3 + 1] = P[1]; x[j * 3 + 2] = P[2];
       pts2[j * 2] = q.x; pts2[j * 2 + 1] = q.y;
       uv[j * 2] = q.x * gv[1] - q.y * gv[0]; uv[j * 2 + 1] = q.x * gv[0] + q.y * gv[1]; // fabric runs along the grainline
@@ -393,11 +479,11 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
 
   // ---------- seams ----------
   const P3 = (i) => [x[i * 3], x[i * 3 + 1], x[i * 3 + 2]];
-  const chainsOf = (spec) => {
+  const chainsOf = (spec, seam = false) => { // seam: for sewing by name, which leaves out edges sewn by hand
     const out = [];
     for (const I of inst) {
       if (!spec.keys.includes(I.key)) continue;
-      let runs = I.pc.mesh.runs;
+      const runs = I.pc.mesh.runs;
       // The sleeve cap is one edge on the pattern; it is sewn as a front half and a back half.
       if (spec.names.some((n) => n === 'capF' || n === 'capB')) {
         const cap = runs.filter((r) => r.name === 'cap').flatMap((r) => r.idx), pts = I.pc.mesh.pts;
@@ -406,17 +492,22 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
         out.push(mkChain(I, spec.names.includes('capF') === frontFirst ? first : second));
         continue;
       }
-      const n = runs.length, ok = runs.map((r) => spec.names.includes(r.name));
-      if (!ok.some(Boolean)) continue;
-      const start = ok.every(Boolean) ? 0 : ok.findIndex((v, i) => v && !ok[(i - 1 + n) % n]);
-      for (let k = 0, cur = null; k < n; k++) {
-        const i = (start + k) % n;
-        if (ok[i]) { cur ||= []; for (const v of runs[i].idx) if (cur[cur.length - 1] !== v) cur.push(v); }
-        if ((!ok[i] || k === n - 1) && cur) { if (cur.length > 1) out.push(mkChain(I, cur)); cur = null; }
-      }
+      out.push(...chainsWhere(I, (r) => spec.names.includes(r.name) && !(seam && live.has(r.sew))));
     }
     return out;
   };
+  // Chains of consecutive edges of one piece that pass the test, each with its piece (I) and half (side).
+  function chainsWhere(I, test) {
+    const runs = I.pc.mesh.runs, n = runs.length, ok = runs.map(test), out = [];
+    if (!ok.some(Boolean)) return out;
+    const start = ok.every(Boolean) ? 0 : ok.findIndex((v, i) => v && !ok[(i - 1 + n) % n]);
+    for (let k = 0, cur = null, side = 1; k < n; k++) {
+      const i = (start + k) % n;
+      if (ok[i]) { if (!cur) { cur = []; side = runs[i].side; } for (const v of runs[i].idx) if (cur[cur.length - 1] !== v) cur.push(v); }
+      if ((!ok[i] || k === n - 1) && cur) { if (cur.length > 1) out.push({ ...mkChain(I, cur), I, side }); cur = null; }
+    }
+    return out;
+  }
   function mkChain(I, local) {
     const pts = I.pc.mesh.pts, de = I.pc.mesh.dartEnds, t = [0];
     for (let k = 1; k < local.length; k++) t.push(t[k - 1] + (de.has(`${local[k - 1]}|${local[k]}`) ? 0 : dist(pts[local[k - 1]], pts[local[k]])));
@@ -461,16 +552,17 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
   // A seam constraint ties point i to a spot on the other edge: between points j0 and j1, fraction t.
   // Tying to a spot along the edge (not the nearest point) lets both edges lie exactly on each other,
   // even where they have different point spacing or one is eased or gathered onto the other.
-  const seams = new Map();
+  const seams = new Map(), lines = []; // lines: one side of each seam, as a chain of points, for drawing it
   const link = (i, j0, j1 = j0, t = 0) => {
     if (t < 0.03) j1 = j0; else if (t > 0.97) j0 = j1;
     if (j0 === j1) { if (i !== j0) seams.set(`p${Math.min(i, j0)},${Math.max(i, j0)}`, [i, j0, j0, 0]); return; }
     if (i !== j0 && i !== j1) seams.set(`e${i},${j0},${j1}`, [i, j0, j1, t]);
   };
   const bracket = (f, arr) => { let lo = 0, hi = arr.length - 1; while (hi - lo > 1) { const m2 = (lo + hi) >> 1; if (arr[m2] <= f) lo = m2; else hi = m2; } return [lo, hi, clamp((f - arr[lo]) / ((arr[hi] - arr[lo]) || 1), 0, 1)]; };
-  const sew = (a, b) => { // match points by their fraction along each edge
+  const sew = (a, b, dart = false) => { // match points by their fraction along each edge
     const [a0, a1] = ends(a), [b0, b1] = ends(b);
     if (len(sub(a0, b1)) + len(sub(a1, b0)) < len(sub(a0, b0)) + len(sub(a1, b1))) b = reverse(b);
+    lines.push({ v: a.v, dart });
     const fa = a.t.map((v) => v / (a.t[a.t.length - 1] || 1)), fb = b.t.map((v) => v / (b.t[b.t.length - 1] || 1));
     fa.forEach((f, i) => { const [lo, hi, t] = bracket(f, fb); link(a.v[i], b.v[lo], b.v[hi], t); });
     fb.forEach((f, j) => { const [lo, hi, t] = bracket(f, fa); link(b.v[j], a.v[lo], a.v[hi], t); });
@@ -490,6 +582,7 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
     };
     const av = ring(A), bv = ring(Bs);
     if (av.length < 2 || bv.length < 2) return;
+    lines.push({ v: av.map((e) => e[1]), closed: true });
     const onto = (ang, arr) => { // the two neighbours of ang on the ring, and how far between them it lies
       let k = arr.findIndex((e) => e[0] > ang); if (k < 0) k = 0;
       const p = arr[(k - 1 + arr.length) % arr.length], q = arr[k], span = ((q[0] - p[0]) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) || 2 * Math.PI;
@@ -498,11 +591,18 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
     for (const [ang, v] of av) link(v, ...onto(ang, bv));
     for (const [ang, v] of bv) link(v, ...onto(ang, av));
   };
+  // Sewing marks that lead somewhere among the pieces in 3D: two or more edges, or one sewn to its mirror
+  // image. A mark whose other edge is on a piece that isn't shown sews nothing, and the edge keeps its named seam.
+  const marked = (id) => { const by = new Map(); let twin = false; for (const I of inst) { const cs = chainsWhere(I, (r) => r.sew === id); if (cs.length) { by.set(I.pc, [...(by.get(I.pc) || []), ...cs]); twin ||= I.pc.mesh.runs.some((r) => r.sew === id && r.twin); } } return { groups: [...by], twin }; };
+  const live = new Set([...new Set(inst.flatMap((I) => I.pc.mesh.runs.map((r) => r.sew).filter(Boolean)))].filter((id) => {
+    const { groups, twin } = marked(id);
+    return groups.length > 1 || twin || groups[0][1].some((a) => groups[0][1].some((b) => a !== b && a.I === b.I && a.side === b.side));
+  }));
   for (const [A, Bspec, kind] of rules) {
-    let ca = chainsOf(A);
+    let ca = chainsOf(A, true);
     if (A.join) ca = join(ca);
     if (Bspec === 'self') { for (const [a, b] of pairUp(ca, null, true)) sew(a, b); continue; }
-    let cb = chainsOf(Bspec);
+    let cb = chainsOf(Bspec, true);
     if (Bspec.join) cb = join(cb);
     if (!ca.length || !cb.length) continue;
     if (kind === 'loop') sewLoop(ca, cb); else for (const [a, b] of pairUp(ca, cb)) sew(a, b);
@@ -515,8 +615,118 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
     for (const [a, b] of pairUp(chainsOf(S_(['strapsim'], ['end1'])), fronts)) sew(a, b);
     for (const [a, b] of pairUp(chainsOf(S_(['strapsim'], ['end2'])), backs)) sew(a, b);
   }
+  // ---------- seams of your own: edges that share a sewing mark are sewn to each other ----------
+  // Pieces with a place on the body are already there. A sewn-on piece (collar, cuff, ruffle, waistband…)
+  // starts lying along the edges it's sewn to, reaching away from them, and is then sewn on.
+  const instOf = new Int32Array(N); inst.forEach((I, k) => instOf.fill(k, I.base, I.base + I.pc.mesh.pts.length));
+  const there = new Set(inst.filter((I) => I.frame !== 'attach')), isThere = (pc) => inst.every((I) => I.pc !== pc || there.has(I)), freeV = new Set();
+  const sewFree = (a, b) => { sew(a, b); for (const v of a.v) freeV.add(v); for (const v of b.v) freeV.add(v); };
+  const endGap = (a, b) => { const [a0, a1] = ends(a), [b0, b1] = ends(b); return [[len(sub(a1, b0)), 0], [len(sub(a1, b1)), 1], [len(sub(a0, b1)), 2], [len(sub(a0, b0)), 3]].sort((p, q) => p[0] - q[0])[0]; };
+  const glue = (a, b) => ({ v: [...a.v, ...b.v], t: [...a.t, ...b.t.map((v) => v + a.t[a.t.length - 1])] });
+  const mergeTo = (cs, m) => { // join chains end to end, nearest ends first, until m are left
+    cs = [...cs];
+    while (cs.length > Math.max(1, m)) {
+      let best = null;
+      for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) { const [d, how] = endGap(cs[i], cs[j]); if (!best || d < best[0]) best = [d, how, i, j]; }
+      const [, how, i, j] = best, a = cs[i], b = cs[j];
+      cs.splice(j, 1); cs[i] = how === 0 ? glue(a, b) : how === 1 ? glue(a, reverse(b)) : how === 2 ? glue(b, a) : glue(reverse(b), a);
+    }
+    return cs;
+  };
+  const halves = (c) => { // from the middle out to each end (the two halves of a collar meet at the centre back)
+    const T = c.t[c.t.length - 1], k = clamp(c.t.findIndex((v) => v >= T / 2), 1, c.v.length - 2);
+    return [{ v: c.v.slice(k), t: c.t.slice(k).map((v) => v - c.t[k]) }, reverse({ v: c.v.slice(0, k + 1), t: c.t.slice(0, k + 1) })];
+  };
+  // Lay a sewn-on piece along a chain of edge points: each of its points keeps its distance along and
+  // away from its own sewn edge, measured along the host edge and straight out from the host piece.
+  function layOn(I, att, host) {
+    // Along both edges the measure is pattern length (t), the one sewing matches them by: where the host
+    // is several pieces' edges end to end, the gaps between them (seams still open) count for nothing.
+    const pts = I.pc.mesh.pts, E = att.v.map((v) => pts[v - I.base]), S2 = att.t, H = host.v.map(P3), S3 = host.t;
+    const L2 = S2[S2.length - 1] || 1, L3 = S3[S3.length - 1] || 1;
+    let last = [0, -1, 0];
+    // Straight out from the host at each point: away from the neighbour that lies most squarely in from
+    // this edge (measured against the edge itself, so a hem's corner doesn't lean along the side seam).
+    const raw = host.v.map((v, i) => {
+      const J = inst[instOf[v]], Mh = J.pc.mesh, lv = v - J.base, q = Mh.pts[lv], same = (w) => w !== undefined && instOf[w] === instOf[v];
+      const a = same(host.v[i - 1]) ? Mh.pts[host.v[i - 1] - J.base] : q, b = same(host.v[i + 1]) ? Mh.pts[host.v[i + 1] - J.base] : q, tx = b.x - a.x, ty = b.y - a.y, tl = Math.hypot(tx, ty);
+      let best = 0, u = -1;
+      if (tl > 1e-6) for (const w of Mh.nbr.get(lv) || []) { const r = Mh.pts[w], perp = Math.abs((r.x - q.x) * ty - (r.y - q.y) * tx) / tl, score = perp / (dist(q, r) || 1); if (perp > 0.2 && score > best) { best = score; u = w; } }
+      if (u >= 0) last = nrm(sub(P3(v), P3(J.base + u)));
+      return last;
+    });
+    // "Straight out" is evened over a hand's width of the edge: flared cloth starts out in waves, and
+    // point by point its edge faces in and out with them.
+    // It also leans three parts in four towards the whole edge's average (down from a hem, up from a waist,
+    // along the arm from a sleeve end), so the piece starts as one smooth band with no rows crossing.
+    const all = nrm(raw.reduce(add, [0, 0, 0]));
+    const outs = raw.map((_, i) => { let o = [0, 0, 0]; for (let k = Math.max(0, i - 4); k <= Math.min(raw.length - 1, i + 4); k++) o = add(o, raw[k]); return nrm(add(scl(nrm(o), 0.25), scl(all, 0.75))); });
+    // Each point's place relative to the sewn edge: how far along (s), past its ends (a), and away from it (d).
+    const rel = pts.map((q) => {
+      let best = null;
+      for (let j = 1; j < E.length; j++) {
+        const a = E[j - 1], b = E[j], L = dist(a, b) || 1e-9, tx = (b.x - a.x) / L, ty = (b.y - a.y) / L, raw = (q.x - a.x) * tx + (q.y - a.y) * ty, u = clamp(raw, 0, L);
+        const rx = q.x - a.x - tx * u, ry = q.y - a.y - ty * u, d2 = rx * rx + ry * ry;
+        if (!best || d2 < best.d2) best = { d2, s: S2[j - 1] + (S2[j] - S2[j - 1]) * u / L, a: rx * tx + ry * ty, d: ry * tx - rx * ty };
+      }
+      return best;
+    });
+    const sg = rel.reduce((t, r) => t + r.d, 0) < 0 ? -1 : 1, dir = I.pc.rev ? -1 : 1; // the piece lies to one side of its sewn edge
+    // An edge longer than what it's sewn to gathers. Squashed flat along the shorter edge it would spring
+    // apart and tangle, so it starts in waves (10 cm of cloth to each) just deep enough to take up its length.
+    const squash = L3 / L2, LAM = 10, amp = squash < 0.95 ? Math.min(4, Math.sqrt(2 * (1 / (squash * squash) - 1)) * LAM * squash / (2 * Math.PI)) : 0;
+    rel.forEach((r, i) => {
+      const f = I.pc.rev ? 1 - r.s / L2 : r.s / L2, u3 = f * L3;
+      let h = 1; while (h < H.length - 1 && (S3[h] < u3 || S3[h] === S3[h - 1])) h++; // never in a gap between two pieces
+      const k = clamp((u3 - S3[h - 1]) / ((S3[h] - S3[h - 1]) || 1), 0, 1), T = nrm(sub(H[h], H[h - 1])), O0 = add(scl(outs[h - 1], 1 - k), scl(outs[h], k)), O = nrm(sub(O0, scl(T, dot(O0, T))));
+      let P = add(add(add(H[h - 1], scl(sub(H[h], H[h - 1]), k)), scl(T, r.a * dir)), scl(O, r.d * sg));
+      if (amp) P = add(P, scl(cross(T, O), amp * Math.sin(2 * Math.PI * r.s / LAM) * Math.min(1, Math.abs(r.d) / 4))); // flat where it's sewn on
+      x.set(P, (I.base + i) * 3);
+    });
+    // Whatever landed inside the body (a collar reaching into the neck) is moved out to just above the skin.
+    const probe = [0, 0, 0, 0];
+    for (let i = I.base; i < I.base + pts.length; i++) {
+      let q = P3(i);
+      for (let it = 0; it < 40; it++) {
+        const inGrid = sample(F, q[0], q[1], q[2], probe), d = probe[0], gl = Math.hypot(probe[1], probe[2], probe[3]);
+        if (!inGrid || d >= 0.8) break;
+        if (gl > 0.3) q = add(q, scl([probe[1], probe[2], probe[3]], (0.85 - d) / gl));
+        else { const El = B.torso(q[1]), r = [q[0], 0, q[2] - El.cz], rl = len(r) || 1; q = add(q, scl(r, 1.5 / rl)); }
+      }
+      x.set(q, i * 3);
+    }
+  }
+  let todo = [...live];
+  for (let moved = true; moved && todo.length;) {
+    moved = false;
+    for (const id of todo) {
+      const { groups, twin } = marked(id), waiting = groups.filter(([pc]) => !isThere(pc));
+      if (waiting.length > 1 || (waiting.length && groups.length === 1)) continue; // another seam has to place these first
+      todo = todo.filter((k) => k !== id); moved = true;
+      if (waiting.length) { // a sewn-on piece: lay each copy along its share of the edges, then sew it on
+        const [pc, att] = waiting[0], Is = inst.filter((I) => I.pc === pc), mine = Is.map((I) => att.find((c) => c.I === I)).filter(Boolean);
+        let hosts = mergeTo(join(groups.filter((gr) => gr[0] !== pc).flatMap((gr) => gr[1])), mine.length);
+        if (hosts.length === 1 && mine.length === 2) hosts = halves(hosts[0]);
+        hosts.sort((a, b) => mid(b)[0] - mid(a)[0]); // her left (+x) first, like the copies
+        mine.forEach((c, k) => { const host = hosts[k % hosts.length]; layOn(c.I, c, host); sewFree(host, c); });
+        for (const I of Is) there.add(I);
+      } else if (groups.length === 1) {
+        const cs = groups[0][1];
+        if (twin) { for (const [a, b] of pairUp(cs, null, true)) sewFree(a, b); continue; } // to its mirror image: a centre seam
+        const sets = new Map(); // two edges of one piece: each copy (and each half of a piece cut on the fold) is sewn to itself
+        for (const c of cs) { const k = `${instOf[c.v[0]]}|${c.side}`; sets.set(k, [...(sets.get(k) || []), c]); }
+        for (const set of sets.values()) if (set.length > 1) for (const [a, b] of pairUp(set, null, true)) sewFree(a, b);
+      } else if (groups.length === 2) { for (const [a, b] of pairUp(groups[0][1], groups[1][1])) sewFree(a, b); }
+      else { // one piece's edge sewn to the edges of several others: those join up end to end first
+        const lone = groups.find(([pc]) => pc.frame === 'attach') || groups[0], rest = mergeTo(join(groups.filter((gr) => gr !== lone).flatMap((gr) => gr[1])), lone[1].length);
+        for (const [a, b] of pairUp(lone[1], rest)) sewFree(a, b);
+      }
+    }
+  }
   // Darts: the two legs are sewn together.
-  for (const I of inst) for (const [L1, L2] of I.pc.mesh.darts) if (L1.length > 1 && L2.length > 1) sew(mkChain(I, L1), mkChain(I, L2));
+  for (const I of inst) for (const [L1, L2] of I.pc.mesh.darts) if (L1.length > 1 && L2.length > 1) sew(mkChain(I, L1), mkChain(I, L2), true);
+  // Pleats: the two ends are stitched together, and the fold between them is stitched flat against the edge.
+  for (const I of inst) for (const T of I.pc.mesh.tucks) { link(I.base + T.a, I.base + T.b); for (const [i, j0, j1, t] of T.ties) link(I.base + i, I.base + j0, I.base + j1, t); }
 
   // ---------- waist pins: the top edge of skirts and trousers sits on the body's waist ----------
   const pins = [];
@@ -545,7 +755,7 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
     bands.push({ verts: vs, out, dir: vs.flatMap(() => [0, kind === 'down' ? -1 : 1, 0]), height, kind, closed: true });
   };
   const edge = (keys, names) => chainsOf(S_(keys, names)).flatMap((c) => c.v);
-  if (pins.length && o.waist !== 'facing') torsoBand(pins.map((p) => p[0]), type === 'skirt' ? (o.waist === 'band' ? o.bandWidth || 4 : 3) : 4, 'up');
+  if (pins.length && o.waist !== 'facing' && !pins.some((p) => freeV.has(p[0]))) torsoBand(pins.map((p) => p[0]), type === 'skirt' ? (o.waist === 'band' ? o.bandWidth || 4 : 3) : 4, 'up');
   if (type === 'jacket') {
     torsoBand(edge(['front', 'sidefront', 'back', 'sideback'], ['hem']), 5, 'down');
     torsoBand(edge(['frontyoke', 'backyoke'], ['neck']), 3.5, 'collar');
@@ -558,9 +768,46 @@ export function assemble(g, m, body, F, { maxPoints = 7000 } = {}) {
     }
   }
   const seamArr = [...seams.values()];
+  // ---------- pockets and patches: each point is tied to a spot on the host's cloth (a triangle and three weights) ----------
+  const patches = [];
+  for (const q of g.pieces) {
+    const pc = isPatch(q) && pieces.find((c) => c.id === q.on.p), mk = pc && pc.p.marks.find((k) => k.type === 'patch' && k.id === q.id);
+    if (!mk) continue;
+    const Mq = inward(meshPiece({ nodes: q.nodes, segs: q.segs, marks: [] }, Math.min(h, 2))), n = Mq.pts.length, two = (q.cut?.n || 1) >= 2;
+    const gr = q.grain, gu = gr ? [gr.b.x - gr.a.x, gr.b.y - gr.a.y] : [0, 1], gl = Math.hypot(...gu) || 1, gv = [gu[0] / gl, gu[1] / gl];
+    const uvq = Float32Array.from(Mq.pts.flatMap((p2) => [p2.x * gv[1] - p2.y * gv[0], p2.x * gv[0] + p2.y * gv[1]]));
+    // Cut 2 puts one on each side: on each copy of a host cut as a pair, or mirrored across the fold of a host cut on the fold.
+    const hosts = inst.filter((I) => I.pc === pc), spots = pc.p.unfolded ? [mk.pts, ...(two ? [mk.pts.map(pc.p.flip)] : [])].map((fr) => [hosts[0], fr]) : hosts.slice(0, two ? 2 : 1).map((I) => [I, mk.pts]);
+    for (const [I, [O, X, Y]] of spots) {
+      const T = I.pc.mesh.tris, Ph = I.pc.mesh.pts, bind = new Int32Array(n * 3), w = new Float32Array(n * 3);
+      Mq.pts.forEach((p2, i) => {
+        const hx = O.x + (X.x - O.x) * p2.x + (Y.x - O.x) * p2.y, hy = O.y + (X.y - O.y) * p2.x + (Y.y - O.y) * p2.y;
+        let best = null; // the triangle it lies in, or (hanging over the host's edge) the one it's least outside
+        for (const t of T) {
+          const a = Ph[t[0]], b = Ph[t[1]], c = Ph[t[2]], den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y) || 1e-9;
+          const u = ((b.y - c.y) * (hx - c.x) + (c.x - b.x) * (hy - c.y)) / den, v = ((c.y - a.y) * (hx - c.x) + (a.x - c.x) * (hy - c.y)) / den, out = Math.max(0, -u, -v, u + v - 1);
+          if (!best || out < best.out) best = { out, t, u, v };
+          if (!out) break;
+        }
+        bind.set(best.t.map((k) => I.base + k), i * 3); w.set([best.u, best.v, 1 - best.u - best.v], i * 3);
+      });
+      patches.push({ key: `patch:${q.id}`, name: q.name, inst: inst.indexOf(I), pts: Mq.pts, tris: Mq.tris, runs: Mq.runs, inU: Mq.inU, inPerp: Mq.inPerp, uv: uvq, bind, w });
+    }
+  }
+  // Open edges: what isn't sewn to anything, held at the waist or finished with a band is hemmed
+  // (or faced or bound), which shows as a line of stitching a little way in from the edge.
+  const closedV = new Set(seamArr.flatMap(([i, j0, j1]) => [i, j0, j1])), hems = [];
+  for (const p of pins) closedV.add(p[0]);
+  for (const b of bands) for (const v of b.verts) closedV.add(v);
+  for (const I of inst) for (const r of I.pc.mesh.runs) {
+    const v = r.idx.map((k) => I.base + k);
+    if (v.length > 2 && v.filter((k) => closedV.has(k)).length < v.length * 0.3) hems.push({ v, off: r.name === 'hem' || r.name === 'bottom' ? 2 : 0.6 });
+  }
+  const inU = new Int32Array(N).fill(-1), inPerp = new Float32Array(N);
+  for (const I of inst) { const M = I.pc.mesh; for (let k = 0; k < M.pts.length; k++) if (M.inU[k] >= 0) { inU[I.base + k] = I.base + M.inU[k]; inPerp[I.base + k] = M.inPerp[k]; } }
   const grip = new Uint8Array(N); // straps grip the shoulder like fabric on skin
   for (const I of inst) if (I.frame === 'strap') grip.fill(1, I.base, I.base + I.pc.mesh.pts.length);
-  return { inst, N, x, uv, pts2, mass, stretch: st, bend: bd, strong, seams: seamArr, pins, grip, bands, h, short };
+  return { inst, N, x, uv, pts2, mass, stretch: st, bend: bd, strong, seams: seamArr, pins, grip, bands, h, short, lines, hems, inU, inPerp, patches };
 }
 
 // Ribbon mesh for a band: rows of points stepped out from the cloth edge.
