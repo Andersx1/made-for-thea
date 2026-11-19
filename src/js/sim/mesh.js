@@ -21,21 +21,24 @@ export function inPoly(poly, x, y) { let c = false; for (let i = 0, j = poly.len
 function segDist(p, a, b) { const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy || 1, t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2)); return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy); }
 const polyArea = (P) => { let a = 0; for (let i = 0; i < P.length; i++) { const p = P[i], q = P[(i + 1) % P.length]; a += p.x * q.y - q.x * p.y; } return a / 2; };
 
-// Bowyer–Watson Delaunay triangulation. ponytail: O(n²), fine for the ~2000 points of one piece.
+// Bowyer–Watson Delaunay triangulation. Points go in from left to right, so a triangle whose circle lies
+// wholly to the left of the point going in can never be undone by a later one and is set aside: each point
+// is then checked against the triangles near the advancing front only, not all of them.
 export function delaunay(pts) {
   const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y), mx = Math.min(...xs), my = Math.min(...ys), d = Math.max(Math.max(...xs) - mx, Math.max(...ys) - my) * 20;
   const P = [...pts, { x: mx - d, y: my - d }, { x: mx + 2 * d, y: my - d }, { x: mx - d, y: my + 2 * d }], n = pts.length;
   const circ = (a, b, c) => { const A = P[a], B = P[b], C = P[c], D = 2 * (A.x * (B.y - C.y) + B.x * (C.y - A.y) + C.x * (A.y - B.y)); const ux = ((A.x ** 2 + A.y ** 2) * (B.y - C.y) + (B.x ** 2 + B.y ** 2) * (C.y - A.y) + (C.x ** 2 + C.y ** 2) * (A.y - B.y)) / D, uy = ((A.x ** 2 + A.y ** 2) * (C.x - B.x) + (B.x ** 2 + B.y ** 2) * (A.x - C.x) + (C.x ** 2 + C.y ** 2) * (B.x - A.x)) / D; return { x: ux, y: uy, r2: (A.x - ux) ** 2 + (A.y - uy) ** 2 }; };
-  let tris = [[n, n + 1, n + 2]].map((t) => ({ t, c: circ(...t) }));
-  for (let i = 0; i < n; i++) {
+  const tri = (t) => { const c = circ(...t); return { t, c, right: c.x + Math.sqrt(c.r2) }; }, order = pts.map((_, i) => i).sort((a, b) => P[a].x - P[b].x), settled = [];
+  let tris = [tri([n, n + 1, n + 2])];
+  for (const i of order) {
     const p = P[i], bad = [], keep = [];
-    for (const T of tris) ((p.x - T.c.x) ** 2 + (p.y - T.c.y) ** 2 < T.c.r2 ? bad : keep).push(T);
+    for (const T of tris) { if (T.right < p.x - 1e-9) settled.push(T); else ((p.x - T.c.x) ** 2 + (p.y - T.c.y) ** 2 < T.c.r2 ? bad : keep).push(T); }
     const edges = new Map();
     for (const { t } of bad) for (const [a, b] of [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]) { const k = a < b ? `${a},${b}` : `${b},${a}`; edges.set(k, edges.has(k) ? null : [a, b]); }
-    for (const e of edges.values()) if (e) keep.push({ t: [e[0], e[1], i], c: circ(e[0], e[1], i) });
+    for (const e of edges.values()) if (e) keep.push(tri([e[0], e[1], i]));
     tris = keep;
   }
-  return tris.map((T) => T.t).filter((t) => t.every((v) => v < n));
+  return [...settled, ...tris].map((T) => T.t).filter((t) => t.every((v) => v < n));
 }
 
 // Mirror a cut-on-fold piece across its fold edge into the full piece. Each seg gets side +1
@@ -51,31 +54,58 @@ export function unfold(p) {
   const nodes = [...A], segs = S.map((s) => ({ ...s, side: 1 }));
   for (let k = n - 2; k >= 1; k--) nodes.push(R(A[k]));
   for (let k = n - 2; k >= 0; k--) { const s = S[k]; segs.push(s.c1 ? { ...s, c1: R(s.c2), c2: R(s.c1), side: -1 } : { ...s, side: -1 }); }
-  const marks = (p.marks || []).flatMap((mk) => (mk.type === 'dart' ? [mk, { ...mk, pts: mk.pts.map(R).reverse() }] : [mk]));
-  return { ...p, nodes, segs, marks, unfolded: true };
+  const marks = (p.marks || []).flatMap((mk) => (mk.type === 'dart' || mk.type === 'pleat' ? [mk, { ...mk, pts: mk.pts.map(R).reverse() }] : [mk]));
+  return { ...p, nodes, segs, marks, unfolded: true, flip: R };
 }
 
-// h = target edge length (cm). Returns { pts (2D, cm), tris, runs: [{name, side, idx[]}] one per seg,
-// darts: [[leg1 idx[], leg2 idx[]]], dartEnds: Set of "a|b" boundary pairs that close together }.
+// h = target edge length (cm). Returns { pts (2D, cm), tris, runs: [{name, side, sew, twin, idx[]}] one per seg,
+// darts: [[leg1 idx[], leg2 idx[]]], tucks: [{ a, b, ties }] pleats, dartEnds: Set of "a|b" boundary pairs that close together }.
 export function meshPiece(p, h = 2) {
   const darts = (p.marks || []).filter((mk) => mk.type === 'dart' && (mk.pts.length === 3 || mk.pts.length === 5)).map((mk) => {
     const P = mk.pts;
     return P.length === 3 ? { poly: [P[0], P[1], P[2]], legs: [[P[0], P[1]], [P[2], P[1]]], ends: [P[0], P[2]] } : { poly: [P[0], P[1], P[2], P[3]], legs: [[P[0], P[1], P[2]], [P[0], P[3], P[2]]], ends: [] };
   });
-  // Boundary, with the V-dart ends forced onto it.
-  const pts = [], runs = [], endIdx = new Map();
+  // A pleat is two points on an edge that are brought together: the cloth between them stays (it folds),
+  // but for sewing the edge is as if that stretch weren't there. Returned as tucks: [{ a, b, ties }]: the two
+  // points, and for each edge point between them the spot on the edge it is stitched flat against.
+  const pleats = (p.marks || []).filter((mk) => mk.type === 'pleat' && mk.pts.length === 2);
+  // Boundary, with the V-dart ends and the pleat ends forced onto it.
+  const pts = [], runs = [], endIdx = new Map(), endRun = new Map();
   p.segs.forEach((s, i) => {
     const q = segPts(p, i, 48), L = polyLen(q), n = Math.max(1, Math.round(L / h)), forced = [];
     darts.forEach((D, di) => D.ends.forEach((e, k) => { const r = arcOf(q, e); if (r.d < 0.3 && r.s > 1e-3 && r.s < L - 1e-3) forced.push({ s: r.s, key: `${di}:${k}` }); }));
+    pleats.forEach((mk, pi) => mk.pts.forEach((e, k) => { const r = arcOf(q, e); if (r.d < 0.3 && r.s > 1e-3 && r.s < L - 1e-3) { forced.push({ s: r.s, key: `p${pi}:${k}` }); endRun.set(`p${pi}:${k}`, i); } }));
     const at = [];
     for (let k = 0; k < n; k++) { const s = L * k / n; if (k === 0 || !forced.some((f) => Math.abs(f.s - s) < h * 0.45)) at.push({ s }); }
     at.push(...forced); at.sort((a, b) => a.s - b.s);
     const idx = [];
     for (const a of at) { if (a.key) endIdx.set(a.key, pts.length); idx.push(pts.length); pts.push(along(q, a.s)); }
-    runs.push({ name: s.name || '', side: s.side ?? 1, idx });
+    runs.push({ name: s.name || '', side: s.side ?? 1, sew: s.sew, twin: !!s.twin, open: !!s.open, idx });
   });
   runs.forEach((r, i) => r.idx.push(runs[(i + 1) % runs.length].idx[0])); // each run ends where the next begins
+  // Pleats: the edge's points between the two ends leave the edge (they're no longer sewn or pinned with it).
+  const tucks = [];
+  pleats.forEach((mk, pi) => {
+    const a = endIdx.get(`p${pi}:0`), b = endIdx.get(`p${pi}:1`), ri = endRun.get(`p${pi}:0`);
+    if (a === undefined || b === undefined || ri !== endRun.get(`p${pi}:1`)) return; // both ends on one edge
+    const idx = runs[ri].idx, ia = idx.indexOf(a), ib = idx.indexOf(b), lo = Math.min(ia, ib), hi = Math.max(ia, ib);
+    // The first point is folded onto the second, so the cloth between doubles back under the edge on the first
+    // point's far side: a point d cm into the pleat (from either end) lies against the edge d cm beyond the first point.
+    const S = [0]; for (let k = 1; k < idx.length; k++) S.push(S[k - 1] + dist(pts[idx[k - 1]], pts[idx[k]]));
+    const D = Math.abs(S[ib] - S[ia]), away = ia < ib ? -1 : 1, ties = [];
+    for (let k = lo + 1; k < hi; k++) {
+      const u = Math.abs(S[k] - S[ia]), at = Math.max(S[0], Math.min(S[S.length - 1], S[ia] + away * Math.min(u, D - u)));
+      let j = away < 0 ? Math.max(0, ia - 1) : ia; // the edge link [j, j + 1] beyond the first point that holds that spot
+      while (away < 0 ? j > 0 && S[j] > at : j < idx.length - 2 && S[j + 1] < at) j += away;
+      ties.push([idx[k], idx[j], idx[j + 1], Math.max(0, Math.min(1, (at - S[j]) / ((S[j + 1] - S[j]) || 1)))]);
+    }
+    idx.splice(lo + 1, hi - lo - 1);
+    tucks.push({ a, b, ties });
+  });
   const nb = pts.length, poly = pts.slice(0, nb);
+  // A dart drawn a hair short of (or past) a curved edge starts where its ends landed on the edge;
+  // otherwise the triangle beside that corner counts as inside the dart and leaves a hole.
+  darts.forEach((D, di) => D.ends.forEach((e, k) => { const i = endIdx.get(`${di}:${k}`); if (i !== undefined) D.legs[k][0] = D.poly[k * 2] = pts[i]; }));
   // Dart legs: shared end/tip points, evenly spaced points between.
   const legChains = [];
   darts.forEach((D, di) => {
@@ -122,5 +152,6 @@ export function meshPiece(p, h = 2) {
   for (const r of runs) r.idx = r.idx.filter((v) => used[v]);
   const dartEnds = new Set();
   for (const [A, B] of legChains) if (A[0] !== B[0]) { dartEnds.add(`${A[0]}|${B[0]}`); dartEnds.add(`${B[0]}|${A[0]}`); }
-  return { pts, tris, runs, darts: legChains.map(([A, B]) => [A.filter((v) => used[v]), B.filter((v) => used[v])]), dartEnds, used, area: polyArea(poly) };
+  for (const { a, b } of tucks) { dartEnds.add(`${a}|${b}`); dartEnds.add(`${b}|${a}`); } // along the edge, a pleat's two ends are the same spot
+  return { pts, tris, runs, darts: legChains.map(([A, B]) => [A.filter((v) => used[v]), B.filter((v) => used[v])]), dartEnds, tucks, used, area: polyArea(poly) };
 }

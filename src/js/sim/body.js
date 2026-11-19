@@ -207,3 +207,69 @@ function pads(pos, loops, nipples) {
   const bust = []; for (let i = 0; i < n; i++) { const p = v(i); if (apex.some((a) => Math.hypot(p[0] - a[0], p[1] - a[1], p[2] - a[2]) < 3)) bust.push(i); }
   return [{ verts: hands, r: 1.5 }, { verts: feet, r: 1 }, { verts: bust, r: 0.8 }];
 }
+
+// ---------- poses ----------
+// The body is made standing with its arms a little out. A pose turns the arms about the shoulders and the
+// legs about the hips. The same turning applied to draped cloth carries it along with the limb it's on,
+// and the drape then only has to settle (see the 3D view).
+export const POSES = [['', 'Standing, arms a little out'], ['down', 'Arms by her sides'], ['out', 'Arms straight out'], ['walk', 'Mid-step']];
+// arm: how far below level the arm points (degrees); swing: left arm back / right arm forward; legs: left forward, right back.
+const POSE = { down: { arm: 80, swing: 0, legs: [0, 0] }, out: { arm: 4, swing: 0, legs: [0, 0] }, walk: { arm: 78, swing: 14, legs: [20, -14] } };
+// Returns move(x, y, z, out, soft): where a point in or near the standing body goes in the pose, written to out[0..2].
+// soft: for cloth that hangs between the legs (skirts), which goes with both legs, half and half in the middle.
+export function poser(body, pose) {
+  const A = POSE[pose];
+  if (!A) return null;
+  const P = body.pos, Lp = body.loops, M = body.landmarks, rad = Math.PI / 180;
+  const mid = (name) => { const l = Lp[name], c = [0, 0, 0]; for (const i of l) for (let k = 0; k < 3; k++) c[k] += P[i * 3 + k] / l.length; return c; };
+  const sm = (a, b, v) => { const t = Math.max(0, Math.min(1, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
+  // Her left side (+x); the right is its mirror image.
+  const S = [P[M.shoulderL * 3], P[M.shoulderL * 3 + 1], P[M.shoulderL * 3 + 2]], U = mid('upperarm-circ'), W = mid('wrist-circ'), T = mid('thigh-circ');
+  const J = [S[0] - 2, S[1] - 4.5, (S[2] + U[2]) / 2], al = Math.hypot(W[0] - J[0], W[1] - J[1], W[2] - J[2]), u = [(W[0] - J[0]) / al, (W[1] - J[1]) / al, (W[2] - J[2]) / al];
+  const H = [T[0], M.crotch + 8, T[2]]; // hip joint
+  const turn = -A.arm * rad - Math.atan2(u[1], u[0]), cz = Math.cos(turn), sz = Math.sin(turn); // from where the arm points to where it should
+  const arms = [], legs = [];
+  for (const sg of [1, -1]) {
+    const us = [sg * u[0], u[1], u[2]], Js = [sg * J[0], J[1], J[2]], k = -sg * us[0], ml = Math.hypot(-sg - k * us[0], k * us[1], k * us[2]) || 1, ms = [(-sg - k * us[0]) / ml, -k * us[1] / ml, -k * us[2] / ml]; // ms: from the arm towards the body
+    const sw = -sg * A.swing * rad, cs = Math.cos(sw), ss = Math.sin(sw);
+    arms.push({
+      J: Js,
+      // On the arm: past the shoulder joint and near the arm's line. Down to the elbow, nearer still on the side that
+      // faces the body, so the ribs under the arm stay put; past it there's only arm, and the whole hand goes along.
+      w: (dx, dy, dz) => {
+        const t = dx * us[0] + dy * us[1] + dz * us[2], qx = dx - t * us[0], qy = dy - t * us[1], qz = dz - t * us[2], r = Math.hypot(qx, qy, qz), R = 16 - 9.5 * sm(0.1, 0.8, r > 1e-6 ? (qx * ms[0] + qy * ms[1] + qz * ms[2]) / r : 0) * (1 - sm(14, 26, t));
+        return sm(-2, 6, t) * (1 - sm(R, R + 5, r)) * (1 - sm(al + 40, al + 50, t));
+      },
+      // Down (or up) in the plane of the body, then swung forward or back.
+      R: (dx, dy, dz, o) => { const x1 = cz * dx - sg * sz * dy, y1 = sg * sz * dx + cz * dy; o[0] = x1; o[1] = cs * y1 + ss * dz; o[2] = -ss * y1 + cs * dz; },
+    });
+    const lg = A.legs[sg > 0 ? 0 : 1] * rad, cl = Math.cos(lg), sl = Math.sin(lg), hx = H[0];
+    if (lg) legs.push({
+      leg: true, J: [sg * H[0], H[1], H[2]],
+      // On the leg: below the hip joint, on its side of the body.
+      w: (dx, dy, dz, soft) => (1 - sm(-4, 8, dy)) * (soft ? sm(-hx, hx, sg * (dx + sg * hx)) : sm(-1.5, 1.5, sg * (dx + sg * hx))),
+      R: (dx, dy, dz, o) => { o[0] = dx; o[1] = cl * dy + sl * dz; o[2] = -sl * dy + cl * dz; },
+    });
+  }
+  const o = [0, 0, 0], parts = [...arms, ...legs];
+  return (x, y, z, out, soft = false) => {
+    let ax = 0, ay = 0, az = 0, arm = 0;
+    for (const p of parts) { // arms first: what is on an arm (a hand hanging beside the hip) doesn't go with a leg as well
+      const dx = x - p.J[0], dy = y - p.J[1], dz = z - p.J[2], w = p.w(dx, dy, dz, soft) * (p.leg ? 1 - Math.min(1, arm) : 1);
+      if (!p.leg) arm += w;
+      if (w < 1e-4) continue;
+      p.R(dx, dy, dz, o);
+      ax += w * (o[0] - dx); ay += w * (o[1] - dy); az += w * (o[2] - dz);
+    }
+    out[0] = x + ax; out[1] = y + ay; out[2] = z + az;
+    return out;
+  };
+}
+// The body's points in a pose (the standing body's own when there is none).
+export function posed(body, pose) {
+  const move = poser(body, pose);
+  if (!move) return body.pos;
+  const out = new Float32Array(body.pos.length), q = [0, 0, 0];
+  for (let i = 0; i < out.length; i += 3) { move(body.pos[i], body.pos[i + 1], body.pos[i + 2], q); out[i] = q[0]; out[i + 1] = q[1]; out[i + 2] = q[2]; }
+  return out;
+}

@@ -1,15 +1,17 @@
 // Pattern editor: pan/zoom, move pieces, drag points and curve handles, add/delete points,
 // per-edge seam allowance, notches, rotate/flip/duplicate. Edited pieces stop following
 // the Design options until reset.
-import { S, commit, garment, regen, arrange, uid, profileOf } from './store.js';
+import { S, commit, emit, garment, regen, arrange, uid, profileOf } from './store.js';
 import { TYPES } from './garments/index.js';
 import { pieceSVG, pts, esc, placedBox } from './render.js';
 import * as G from './geom.js';
 import { fmt, parseLen } from './units.js';
 import { seamChecks } from './seamcheck.js';
-import { ROLES, EDGES } from './sim/garment.js';
+import { ROLES, EDGES, isPatch, simType } from './sim/garment.js';
+import { mount3D, nudge3D } from './view3d.js';
 import { rect, piece as newPiece } from './garments/common.js';
 import { traceShape } from './trace-geom.js';
+import { sewEdges, sewChecks, sewTo, sewTwin, unsew, cleanSews, sewColour, sewLetter } from './sews.js';
 
 const ACC = '#c03a6b';
 // Body guide: her measurements at true size beside the pieces, as a half front (centre line on the left).
@@ -28,20 +30,27 @@ function guideSVG(m, k) {
 }
 // What each named edge sews to, in one colour per join (a side seam sews to the other side seams).
 const JOIN = { side: '#2563eb', shoulder: '#16a34a', armhole: '#d97706', cap: '#d97706', centre: '#7c3aed', princess: '#0891b2', underarm: '#0d9488', hem: '#db2777', waist: '#db2777', inseam: '#65a30d' };
-function joinsSVG(q, k) {
-  if (!q.custom || !ROLES[q.role]) return '';
-  const label = Object.fromEntries(EDGES[ROLES[q.role][1]]);
+// Seams sewn by hand (any piece) are lettered A, B, C…, one colour each; they take over from a named join.
+function joinsSVG(q, k, marks) {
+  const label = q.custom && ROLES[q.role] ? Object.fromEntries(EDGES[ROLES[q.role][1]]) : null;
   return q.segs.map((s, i) => {
-    if (!JOIN[s.name]) return '';
-    const P = G.segPts(q, i), mid = P[P.length >> 1];
-    return `<polyline points="${pts(P)}" fill="none" stroke="${JOIN[s.name]}" stroke-width="${4 * k}" stroke-linecap="round" opacity=".85" pointer-events="none"/>`
-      + `<text x="${mid.x}" y="${mid.y}" font-size="${10 * k}" text-anchor="middle" dominant-baseline="central" fill="${JOIN[s.name]}" stroke="#fff" stroke-width="${3 * k}" paint-order="stroke" pointer-events="none">${esc(label[s.name] || s.name)}</text>`;
+    const n = s.sew ? marks.indexOf(s.sew) : -1, col = n >= 0 ? sewColour(n) : label && JOIN[s.name];
+    if (!col) return '';
+    const P = G.segPts(q, i), mid = P[P.length >> 1], text = n >= 0 ? `${sewLetter(n)}${s.twin ? ' ⇋' : ''}` : label[s.name] || s.name;
+    return `<polyline points="${pts(P)}" fill="none" stroke="${col}" stroke-width="${4 * k}" stroke-linecap="round" opacity=".85" pointer-events="none"/>`
+      + `<text x="${mid.x}" y="${mid.y}" font-size="${(n >= 0 ? 13 : 10) * k}" font-weight="${n >= 0 ? 700 : 400}" text-anchor="middle" dominant-baseline="central" fill="${col}" stroke="#fff" stroke-width="${3 * k}" paint-order="stroke" pointer-events="none">${esc(text)}</text>`;
   }).join('');
 }
+// Pieces that can be sewn flat onto another: your own with "Pocket or patch" chosen, and drafted patch pockets.
+const pocketish = (g, p) => (p.custom ? p.role === 'patch' : ['patchpocket', 'backpocket', 'coin'].includes(p.key) || (p.key === 'pocket' && g.type === 'jacket'));
+let split = typeof innerWidth === 'number' && innerWidth >= 1250; // the 3D view beside the pattern (on to start with where there's room)
+let pause = 0; // timer: a drag that rests a moment updates the 3D view
+let picking = null; // choosing what an edge sews to: { p: piece id, seg } of the edge that was selected
 let drawing = null; // points clicked so far while drawing a new piece: [{x, y, corner}]
 let view = null, sel = { p: null, node: null, seg: null, notch: null }, drag = null, svg = null, lastG = null, lastPt = null;
 const clearSel = () => { sel = { p: null, node: null, seg: null, notch: null }; };
 const piece = () => garment()?.pieces.find((p) => p.id === sel.p);
+const g0 = garment;
 const local = (p, m) => ({ x: m.x - p.pos.x, y: m.y - p.pos.y });
 
 function toWorld(e) { const r = svg.getBoundingClientRect(); return { x: (e.clientX - r.left - view.tx) / view.s, y: (e.clientY - r.top - view.ty) / view.s }; }
@@ -81,7 +90,7 @@ function overlay(p, k) {
     const [i, w] = h.split(':').map(Number), s = p.segs[i], c = w === 1 ? s.c1 : s.c2, end = w === 1 ? p.nodes[i] : p.nodes[G.nextI(p, i)];
     o += `<line x1="${end.x}" y1="${end.y}" x2="${c.x}" y2="${c.y}" stroke="${ACC}" stroke-width="${k}" pointer-events="none"/>` + dot(c, `fill="${ACC}" data-h="${h}" style="cursor:move"`, 4);
   }
-  (p.marks || []).forEach((m, j) => { if (m.type === 'dart') m.pts.forEach((q, i) => { o += `<rect x="${q.x - 3 * k}" y="${q.y - 3 * k}" width="${6 * k}" height="${6 * k}" fill="#fff" stroke="#5f5869" stroke-width="${k}" data-mk="${j}:${i}" style="cursor:move"/>`; }); });
+  (p.marks || []).forEach((m, j) => { if (m.type === 'dart' || m.type === 'pleat') m.pts.forEach((q, i) => { o += `<rect x="${q.x - 3 * k}" y="${q.y - 3 * k}" width="${6 * k}" height="${6 * k}" fill="#fff" stroke="#5f5869" stroke-width="${k}" data-mk="${j}:${i}" style="cursor:move"/>`; }); });
   (p.notches || []).forEach((q, j) => { o += dot(q, `fill="${sel.notch === j ? ACC : '#fff'}" stroke="#2563eb" stroke-width="${1.5 * k}" data-notch="${j}" style="cursor:move"`, 3.5); });
   p.nodes.forEach((q, i) => { o += dot(q, `fill="${sel.node === i ? ACC : '#fff'}" stroke="${ACC}" stroke-width="${1.5 * k}" data-node="${i}" style="cursor:move"`); });
   return o;
@@ -91,8 +100,19 @@ function draw() {
   const g = garment(), k = 1 / view.s, p = piece();
   let o = `<g transform="translate(${view.tx},${view.ty}) scale(${view.s})">${grid(k)}`;
   if (guide) o += guideSVG(profileOf(g).m, k);
-  for (const q of g.pieces) o += `<g transform="translate(${q.pos.x},${q.pos.y})">${pieceSVG(q, { k, selected: q.id === sel.p })}${joinsSVG(q, k)}</g>`;
+  const marks = [...sewEdges(g).keys()];
+  for (const q of g.pieces) o += `<g transform="translate(${q.pos.x},${q.pos.y})">${pieceSVG(q, { k, selected: q.id === sel.p })}${joinsSVG(q, k, marks)}</g>`;
+  // Pockets and patches show as a dashed outline on the piece they're sewn onto; drag it to place the pocket.
+  for (const q of g.pieces) {
+    const h = isPatch(q) && g.pieces.find((x) => x.id === q.on.p);
+    if (!h) continue;
+    const ol = G.outline(q), b = G.bbox(ol);
+    o += `<g transform="translate(${h.pos.x + q.on.x - b.x},${h.pos.y + q.on.y - b.y})"><polygon data-on="${q.id}" points="${pts(ol)}" fill="${ACC}" fill-opacity=".1" stroke="${ACC}" stroke-width="${1.5 * k}" stroke-dasharray="${5 * k} ${3 * k}" style="cursor:move"/>`
+      + `<text x="${b.x + b.w / 2}" y="${b.y + b.h / 2}" font-size="${10 * k}" text-anchor="middle" dominant-baseline="central" fill="${ACC}" stroke="#fff" stroke-width="${3 * k}" paint-order="stroke" pointer-events="none">${esc(q.name)}</text></g>`;
+  }
   if (p) o += `<g transform="translate(${p.pos.x},${p.pos.y})">${overlay(p, k)}</g>`;
+  // Choosing what an edge sews to: every other edge lights up and can be clicked.
+  if (picking) for (const q of g.pieces) o += `<g transform="translate(${q.pos.x},${q.pos.y})">${q.segs.map((sg, i) => (sg.fold || (q.id === picking.p && i === picking.seg) ? '' : `<polyline data-pick="${q.id}:${i}" points="${pts(G.segPts(q, i))}" fill="none" stroke="${ACC}" stroke-opacity=".22" stroke-width="${12 * k}" stroke-linecap="round" style="cursor:crosshair"/>`)).join('')}</g>`;
   if (drawing?.length) {
     const sh = traceShape(drawing), n = drawing.length;
     const d = `M${drawing[0].x},${drawing[0].y}` + sh.segs.slice(0, n - 1).map((sg, i) => { const b = drawing[i + 1]; return sg.c1 ? `C${sg.c1.x},${sg.c1.y} ${sg.c2.x},${sg.c2.y} ${b.x},${b.y}` : `L${b.x},${b.y}`; }).join('');
@@ -114,11 +134,18 @@ function bind() {
     const m = toWorld(e), t = e.target, d = t.dataset, p = piece();
     svg.setPointerCapture(e.pointerId);
     if (e.button !== 0 || e.altKey) { drag = { mode: 'pan', sx: e.clientX, sy: e.clientY, tx: view.tx, ty: view.ty }; return; }
+    if (picking) { // the edge clicked is sewn to the selected one; a click anywhere else cancels
+      const from = g0().pieces.find((q) => q.id === picking.p), [qid, i] = (d.pick || '').split(':'), to = g0().pieces.find((q) => q.id === qid);
+      const seg = picking.seg; picking = null;
+      if (from && to) { sewTo(g0(), from, seg, to, +i); commit(); } else { draw(); props(); }
+      return;
+    }
     if (drawing) { // click = corner, Shift+click = a point the edge curves through; snapped to 0.5 cm
       const q = { x: Math.round(m.x * 2) / 2, y: Math.round(m.y * 2) / 2, corner: !e.shiftKey }, f = drawing[0];
       if (drawing.length > 2 && Math.hypot(q.x - f.x, q.y - f.y) * view.s < 8) return finishDrawing();
       drawing.push(q); draw(); props(); return;
     }
+    if (d.on) { const q = g0().pieces.find((x) => x.id === d.on); drag = { mode: 'on', q, start: m, orig: { ...q.on } }; return; } // a pocket's outline on its host
     if (p && d.h) { const [i, w] = d.h.split(':').map(Number); drag = { mode: 'handle', i, w }; return; }
     if (p && d.node != null) { sel.node = +d.node; sel.seg = null; sel.notch = null; drag = { mode: 'node', i: +d.node }; draw(); props(); return; }
     if (p && d.mk) { const [j, i] = d.mk.split(':').map(Number); drag = { mode: 'mark', j, i }; return; }
@@ -136,6 +163,7 @@ function bind() {
     const p = piece(), m = toWorld(e);
     drag.moved = true;
     if (drag.mode === 'pan') { view.tx = drag.tx + e.clientX - drag.sx; view.ty = drag.ty + e.clientY - drag.sy; }
+    else if (drag.mode === 'on') Object.assign(drag.q.on, { x: Math.round((drag.orig.x + m.x - drag.start.x) * 2) / 2, y: Math.round((drag.orig.y + m.y - drag.start.y) * 2) / 2 }); // to the half centimetre
     else if (drag.mode === 'move') p.pos = { x: drag.orig.x + m.x - drag.start.x, y: drag.orig.y + m.y - drag.start.y };
     else {
       const l = local(p, m);
@@ -145,13 +173,16 @@ function bind() {
         if (ps.c2) { ps.c2.x += dx; ps.c2.y += dy; }
         if (ns.c1) { ns.c1.x += dx; ns.c1.y += dy; }
       } else if (drag.mode === 'handle') p.segs[drag.i][drag.w === 1 ? 'c1' : 'c2'] = l;
-      else if (drag.mode === 'mark') p.marks[drag.j].pts[drag.i] = l;
+      else if (drag.mode === 'mark') { const mk = p.marks[drag.j]; mk.pts[drag.i] = mk.type === 'pleat' || (mk.type === 'dart' && mk.pts.length === 3 && drag.i !== 1) ? G.nearestSeg(p, l).pt : l; } // the ends of a dart or pleat stay on the edge
       else if (drag.mode === 'notch') p.notches[drag.j] = G.nearestSeg(p, l).pt;
       markEdited(p);
     }
     draw();
+    // The 3D view beside it follows the edit whenever the drag pauses for a moment (and when it ends).
+    clearTimeout(pause);
+    if (split && drag.mode !== 'pan' && drag.mode !== 'move') pause = setTimeout(() => { if (drag) nudge3D(garment()); }, 250);
   };
-  svg.onpointerup = svg.onpointercancel = () => { const d = drag; drag = null; if (d?.moved && d.mode !== 'pan') commit(); };
+  svg.onpointerup = svg.onpointercancel = () => { const d = drag; drag = null; clearTimeout(pause); if (d?.moved && d.mode !== 'pan') commit(); };
   svg.ondblclick = (e) => {
     const p = piece(), d = e.target.dataset;
     if (!p || d.seg == null) return;
@@ -170,6 +201,7 @@ export function editorKey(e) {
     else return false;
     draw(); props(); return true;
   }
+  if (picking) { if (e.key !== 'Escape') return false; picking = null; draw(); props(); return true; }
   if (e.key === 'Escape') { clearSel(); draw(); props(); return true; }
   if (!p || (e.key !== 'Delete' && e.key !== 'Backspace')) return false;
   if (sel.node != null) { if (G.deleteNode(p, sel.node)) { markEdited(p); sel.node = null; commit(); } return true; }
@@ -186,10 +218,21 @@ function finishDrawing() {
 
 // ---------- side panel ----------
 function seamPanel(g) {
-  const checks = seamChecks(g, profileOf(g).m);
+  const checks = [...seamChecks(g, profileOf(g).m), ...sewChecks(g)];
   if (!checks.length) return '';
-  return `<h4>Seam check</h4><table class="seams">${checks.map((c) => `<tr class="${c.ok ? 'ok' : 'bad'}"><td>${c.ok ? '✓' : '⚠'}</td><td>${esc(c.label)}<small>${esc(fmt(c.a))} vs ${esc(fmt(c.b))} (${c.diff >= 0 ? '+' : ''}${esc(fmt(c.diff))})</small></td></tr>`).join('')}</table>
-    ${checks.some((c) => !c.ok) ? '<p class="tip">⚠ means these edges will not sew together neatly. If you edited a piece, adjust the matching piece too, or reset it.</p>' : '<p class="tip">Edges that sew together match.</p>'}`;
+  // A seam sewn by hand whose two sides differ isn't a mistake: the longer side is gathered or eased on.
+  const row = (c) => (c.free && !c.ok ? `<tr class="ok"><td>〰</td><td>${esc(c.label)}<small>${esc(fmt(c.a))} vs ${esc(fmt(c.b))}: the longer side gathers by ${esc(fmt(Math.abs(c.diff)))}</small></td></tr>`
+    : `<tr class="${c.ok ? 'ok' : 'bad'}"><td>${c.ok ? '✓' : '⚠'}</td><td>${esc(c.label)}<small>${esc(fmt(c.a))} vs ${esc(fmt(c.b))} (${c.diff >= 0 ? '+' : ''}${esc(fmt(c.diff))})</small></td></tr>`);
+  return `<h4>Seam check</h4><table class="seams">${checks.map(row).join('')}</table>
+    ${checks.some((c) => !c.ok && !c.free) ? '<p class="tip">⚠ means these edges will not sew together neatly. If you edited a piece, adjust the matching piece too, or reset it.</p>' : '<p class="tip">Edges that sew together match.</p>'}`;
+}
+// What the selected edge is sewn to by hand, and the buttons to sew or unsew it.
+function sewPanel(g, p, s) {
+  const all = sewEdges(g), n = s.sew ? [...all.keys()].indexOf(s.sew) : -1, twinable = p.cut.fold || p.cut.n >= 2 || p.segs.some((x) => x.fold);
+  const others = n >= 0 ? [...new Set(all.get(s.sew).filter((e) => !e.segs.includes(sel.seg) || e.p !== p).map((e) => (e.p === p ? 'another edge of this piece' : e.p.name)))] : [];
+  return `<h4>Sewn by hand</h4>${n < 0 ? '<p class="tip">Sew this edge to any other edge, on any piece.</p>'
+    : `<p class="stat"><b style="color:${sewColour(n)}">Seam ${sewLetter(n)}</b>: ${s.twin ? 'sewn to its mirror image' : `sewn to ${esc(others.join(', ') || 'nothing yet')}`}</p>`}
+    <div class="btns"><button data-a="pick" class="${n < 0 ? 'primary' : ''}">🧵 Sew to another edge…</button>${twinable && !s.twin ? '<button data-a="twin" title="A centre seam: this edge is sewn to the same edge on the mirrored copy">Sew to its mirror image</button>' : ''}${n >= 0 ? '<button data-a="unsew">Unsew</button>' : ''}</div>`;
 }
 const field = (label, f, value, extra = '') => `<label class="row"><span>${label}</span><input data-f="${f}" value="${esc(value)}" ${extra}></label>`;
 function props() {
@@ -200,13 +243,18 @@ function props() {
       <p class="stat">${drawing.length} points</p><div class="btns">${drawing.length > 2 ? '<button class="primary" data-a="drawdone">Finish shape</button>' : ''}${drawing.length ? '<button data-a="drawundo">Undo point</button>' : ''}<button data-a="drawcancel">Cancel</button></div>`;
     return;
   }
+  if (picking) {
+    el.innerHTML = `<h3>Sew to another edge</h3><p class="tip">Click the edge this one sews to, on this piece or any other. The two get the same letter and colour.</p>
+      <ul class="tip"><li>If the edges are different lengths, the longer one is gathered onto the shorter.</li><li>To sew one long edge (a waistband, collar or ruffle) to several edges, sew each of them to it in turn.</li><li>Esc, or a click anywhere else, cancels.</li></ul><div class="btns"><button data-a="pickcancel">Cancel</button></div>`;
+    return;
+  }
   if (!p) {
     el.innerHTML = `<h3>${esc(g.name)}</h3><p class="tip">Click a piece to select it. Drag to move it. Scroll to zoom; drag empty space to pan.</p>
       <div class="plist">${g.pieces.map((q) => `<button class="pitem" data-sel="${q.id}">${esc(q.name)}<small>${q.edited ? 'edited · ' : ''}${q.cut.n}×</small></button>`).join('')}</div>
-      <div class="btns"><button data-a="draw" class="primary">✏️ Draw a piece</button><button data-a="newp">＋ Rectangle</button><button data-a="guide">${guide ? 'Hide' : 'Show'} body guide</button><button data-a="arrange">Tidy layout</button><button data-a="fit">Zoom to fit</button>${(g.removed || []).length ? '<button data-a="restore">Restore deleted pieces</button>' : ''}</div>
+      <div class="btns"><button data-a="draw" class="primary">✏️ Draw a piece</button><button data-a="newp">＋ Rectangle</button><button data-a="split">${split ? 'Hide the 3D view' : 'Show 3D beside'}</button><button data-a="guide">${guide ? 'Hide' : 'Show'} body guide</button><button data-a="arrange">Tidy layout</button><button data-a="fit">Zoom to fit</button>${(g.removed || []).length ? '<button data-a="restore">Restore deleted pieces</button>' : ''}</div>
       ${seamPanel(g)}
       <h4>Size</h4><p class="tip">The body guide shows ${esc(profileOf(g).name)}'s measurements at true size. Each line is a quarter of the measurement: the width one front piece needs when you cut 2, so the pair goes halfway round. Add 1–4 cm for ease. Bodices start at the top line (neck); skirts and trousers start at the waist line.</p>
-      <h4>Editing</h4><ul class="tip"><li>✏️ Draw a piece: click around a shape of your own. ＋ Rectangle starts from a rectangle instead.</li><li>Select a piece, then drag its round points to reshape it.</li><li>Click an edge to set its seam allowance or see its length.</li><li>Double-click an edge to add a point. Select a point and press Delete to remove it.</li><li>Orange squares on curves are handles that bend the curve.</li><li>Ctrl/⌘+Z undoes anything.</li></ul>`;
+      <h4>Editing</h4><ul class="tip"><li>✏️ Draw a piece: click around a shape of your own. ＋ Rectangle starts from a rectangle instead.</li><li>Select a piece, then drag its round points to reshape it.</li><li>Click an edge to set its seam allowance, see its length, add a dart or pleat, or sew it to another edge.</li><li>Double-click an edge to add a point. Select a point and press Delete to remove it.</li><li>Orange squares on curves are handles that bend the curve.</li><li>Ctrl/⌘+Z undoes anything.</li></ul>`;
     return;
   }
   let h = `<h3>${esc(p.name)}</h3>`;
@@ -214,15 +262,19 @@ function props() {
   h += field('Name', 'piecename', p.name) + `<label class="row"><span>Cut</span><input type="number" min="1" data-f="pcut" value="${p.cut.n}"></label>`
     + `<label class="row"><span>Mirror pairs</span><input type="checkbox" data-f="pmirror" ${p.cut.mirror ? 'checked' : ''}></label>`
     + (p.custom ? `<label class="row"><span>In 3D</span><select data-f="prole"><option value="">Not shown</option>${Object.entries(ROLES).map(([k, [n]]) => `<option value="${k}" ${p.role === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-      ${p.role ? '<p class="tip">Click each edge that sews to another piece and choose under <b>Sews to</b> what it is. Edges with the same name are sewn together: the front’s side seam to the back’s side seam, a shoulder to a shoulder, a sleeve cap into the armhole, a bodice bottom to a skirt waist. A centre seam is sewn to the centre seam of the mirrored copy. Named edges are coloured: same colour, sewn together. Cut 2 (or put the centre on the fold) for a full front or back.</p>' : ''}` : '')
-    + `<div class="btns"><button data-a="rot">⟳ Rotate 90°</button><button data-a="flip">⇋ Flip</button><button data-a="dup">Duplicate</button><button data-a="delp" class="danger">Delete piece</button></div>`
+      ${p.role === 'patch' ? '' : p.role === 'attach' ? `<p class="tip">A sewn-on piece has no place of its own on the body: in 3D it starts along whatever it is sewn to. Click one of its edges and choose <b>Sew to another edge</b>. Cut 2 for a pair (cuffs, two collar halves).</p><label class="row"><span>Other way round</span><input type="checkbox" data-f="prev" ${p.rev ? 'checked' : ''}></label>`
+    : p.role ? '<p class="tip">Click each edge that sews to another piece and choose under <b>Sews to</b> what it is. Edges with the same name are sewn together: the front’s side seam to the back’s side seam, a shoulder to a shoulder, a sleeve cap into the armhole, a bodice bottom to a skirt waist. A centre seam is sewn to the centre seam of the mirrored copy. Named edges are coloured: same colour, sewn together. Cut 2 (or put the centre on the fold) for a full front or back. Any other edge can be sewn by hand: click it and choose <b>Sew to another edge</b>.</p>' : ''}` : '')
+    + (pocketish(g, p) ? `<label class="row"><span>Sewn onto</span><select data-f="pon"><option value="">${p.custom ? 'Choose a piece…' : 'Not shown in 3D'}</option>${g.pieces.filter((q) => q !== p && !pocketish(g, q)).map((q) => `<option value="${q.id}" ${p.on?.p === q.id ? 'selected' : ''}>${esc(q.name)}</option>`).join('')}</select></label>
+      <p class="tip">${p.on ? 'Its dashed outline is on that piece: drag the outline to where the pocket goes. Rotate or flip the pocket here and it turns there too. Cut 2 puts one on each side. Click the pocket’s top edge and choose <b>Leave open</b> so the opening isn’t stitched down.' : 'A pocket or patch lies flat on another piece. Choose which, then drag its outline into place on that piece.'}</p>` : '')
+    + `<div class="btns"><button data-a="rot">⟳ Rotate 90°</button><button data-a="flip">⇋ Flip</button><button data-a="dup">Duplicate</button>${(p.marks || []).some((mk) => mk.type === 'dart' || mk.type === 'pleat') ? '<button data-a="deldart">Remove last dart or pleat</button>' : ''}<button data-a="delp" class="danger">Delete piece</button></div>`
     + `<h4>Seam allowance</h4><div class="inline"><input data-f="allsa" value="${esc(fmt(p.segs.find((s) => !s.fold)?.sa ?? 1.5))}"><button data-a="allsa">Set on all edges</button></div>`;
   if (sel.seg != null && p.segs[sel.seg]) {
     const s = p.segs[sel.seg];
     h += `<h4>Selected edge</h4><p class="stat">Length <b>${esc(fmt(G.segLen(p, sel.seg)))}</b> (stitching line)</p>`
       + (s.fold ? '' : field('Seam allowance', 'sa', fmt(s.sa)))
-      + (p.custom && ROLES[p.role] && !s.fold ? `<label class="row"><span>Sews to</span><select data-f="sname"><option value="">Nothing (hem or open edge)</option>${EDGES[ROLES[p.role][1]].map(([k, n]) => `<option value="${k}" ${s.name === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>` : '')
-      + `<div class="btns"><button data-a="curve">${s.c1 ? 'Make straight' : 'Make curved'}</button><button data-a="fold">${s.fold ? 'Not on fold' : 'Place on fold'}</button><button data-a="notch">Add notch here</button></div>`;
+      + (p.custom && ROLES[p.role] && EDGES[ROLES[p.role][1]].length && !s.fold ? `<label class="row"><span>Sews to</span><select data-f="sname"><option value="">Nothing (hem or open edge)</option>${EDGES[ROLES[p.role][1]].map(([k, n]) => `<option value="${k}" ${s.name === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>` : '')
+      + `<div class="btns"><button data-a="curve">${s.c1 ? 'Make straight' : 'Make curved'}</button><button data-a="fold">${s.fold ? 'Not on fold' : 'Place on fold'}</button><button data-a="notch">Add notch here</button>${s.fold ? '' : '<button data-a="dart">Add dart here</button><button data-a="pleat">Add pleat here</button>'}${pocketish(g, p) && !s.fold ? `<button data-a="opening">${s.open ? 'Stitch this edge down' : 'Leave open (pocket opening)'}</button>` : ''}</div>`
+      + (s.fold ? '' : sewPanel(g, p, s));
   }
   if (sel.node != null) h += `<h4>Selected point</h4><div class="btns"><button data-a="delnode" class="danger">Delete point</button></div>`;
   if (sel.notch != null) h += `<h4>Selected notch</h4><div class="btns"><button data-a="delnotch" class="danger">Delete notch</button></div>`;
@@ -232,6 +284,13 @@ function props() {
 
 function action(a) {
   const g = garment(), p = piece();
+  // Where a dart or pleat goes on the selected edge: where it was clicked (or its middle), with its two ends `half` cm either side.
+  const spot = (half) => {
+    const at = lastPt && G.nearestSeg(p, lastPt).i === sel.seg ? G.nearestSeg(p, lastPt) : G.nearestSeg(p, G.segPts(p, sel.seg, 2)[1]);
+    const { a: u, b: v } = at.dir, L = G.dist(u, v) || 1, t = { x: (v.x - u.x) / L, y: (v.y - u.y) / L }, sg = G.outSign(p), end = (k) => G.nearestSeg(p, { x: at.pt.x + t.x * k, y: at.pt.y + t.y * k }), e0 = end(-half), e1 = end(half);
+    if (e0.i !== sel.seg || e1.i !== sel.seg || G.dist(e0.pt, e1.pt) < half * 1.6) { alert('There is no room for that here. Click further from the ends of the edge, then try again.'); return null; }
+    return { at: at.pt, e0: e0.pt, e1: e1.pt, inw: { x: -sg * t.y, y: sg * t.x } };
+  };
   const A = {
     arrange: () => { arrange(g); fit(); },
     fit: () => { fit(); draw(); return true; },
@@ -240,6 +299,7 @@ function action(a) {
     rot: () => { G.rotate90(p); p.turns = ((p.turns || 0) + 1) % 4; },
     flip: () => { G.flipX(p); p.flipped = !p.flipped; },
     guide: () => { guide = !guide; fit(); draw(); props(); return true; },
+    split: () => { split = !split; view = null; emit(); return true; }, // laid out afresh, with or without the 3D view
     draw: () => { drawing = []; clearSel(); draw(); props(); return true; },
     drawdone: () => { finishDrawing(); return true; },
     drawundo: () => { drawing.pop(); draw(); props(); return true; },
@@ -248,7 +308,23 @@ function action(a) {
       const c = rect(`own-${uid()}`, 'New piece', 30, 40), right = g.pieces.length ? Math.max(...g.pieces.map((q) => { const bb = placedBox(q); return bb.x + bb.w; })) + 5 : 5;
       Object.assign(c, { id: uid(), custom: true, edited: true, pos: { x: right, y: 0 } }); g.pieces.push(c); clearSel(); sel.p = c.id;
     },
-    dup: () => { const c = structuredClone(p); Object.assign(c, { id: uid(), key: `${p.key}-copy-${uid()}`, custom: true, edited: true, name: `${p.name} (copy)`, pos: { x: p.pos.x + 5, y: p.pos.y + 5 } }); g.pieces.push(c); sel.p = c.id; },
+    pick: () => { picking = { p: p.id, seg: sel.seg }; draw(); props(); return true; },
+    pickcancel: () => { picking = null; draw(); props(); return true; },
+    twin: () => sewTwin(g, p, sel.seg),
+    unsew: () => unsew(g, p, sel.seg),
+    dart: () => { // a V dart 2.5 cm wide and 9 cm long where the edge was clicked (or at its middle); drag its three squares to reshape it
+      const sp = spot(1.25);
+      if (sp) { (p.marks ||= []).push({ type: 'dart', pts: [sp.e0, { x: sp.at.x + sp.inw.x * 9, y: sp.at.y + sp.inw.y * 9 }, sp.e1] }); markEdited(p); }
+      return !sp;
+    },
+    pleat: () => { // a pleat taking up 4 cm: its two squares are folded onto each other; drag them to make it deeper or move it
+      const sp = spot(2);
+      if (sp) { (p.marks ||= []).push({ type: 'pleat', pts: [sp.e0, sp.e1] }); markEdited(p); }
+      return !sp;
+    },
+    opening: () => { const sg = p.segs[sel.seg]; if (sg.open) delete sg.open; else sg.open = true; markEdited(p); },
+    deldart: () => { p.marks.splice(p.marks.findLastIndex((mk) => mk.type === 'dart' || mk.type === 'pleat'), 1); markEdited(p); },
+    dup: () => { const c = structuredClone(p); c.segs.forEach((x) => { delete x.sew; delete x.twin; }); Object.assign(c, { id: uid(), key: `${p.key}-copy-${uid()}`, custom: true, edited: true, name: `${p.name} (copy)`, pos: { x: p.pos.x + 5, y: p.pos.y + 5 } }); g.pieces.push(c); sel.p = c.id; },
     delp: () => { if (!confirm(`Delete "${p.name}"?`)) return true; if (!p.custom) (g.removed ||= []).push(p.key); g.pieces = g.pieces.filter((q) => q !== p); clearSel(); },
     allsa: () => { const v = parseLen(document.querySelector('[data-f="allsa"]').value); if (!(v >= 0)) return true; p.segs.forEach((s) => { if (!s.fold) s.sa = v; }); markEdited(p); },
     curve: () => {
@@ -266,21 +342,30 @@ function action(a) {
     delnode: () => { if (G.deleteNode(p, sel.node)) { markEdited(p); sel.node = null; } },
     delnotch: () => { p.notches.splice(sel.notch, 1); sel.notch = null; markEdited(p); },
   };
-  if (A[a] && !A[a]()) commit();
+  if (A[a] && !A[a]()) { // a seam whose other piece has gone is unpicked, and a pocket whose piece has gone comes off
+    cleanSews(g);
+    for (const q of g.pieces) if (q.on && !g.pieces.some((h) => h.id === q.on.p)) delete q.on;
+    commit();
+  }
 }
 
 export function renderPattern(el) {
   const g = garment();
   if (!g) { el.innerHTML = '<div class="empty">Create a garment in <b>Design</b> first.</div>'; return; }
-  if (lastG !== g.id) { view = null; clearSel(); drawing = null; lastG = g.id; }
+  if (lastG !== g.id) { view = null; clearSel(); drawing = picking = null; lastG = g.id; }
+  if (picking && !g.pieces.some((q) => q.id === picking.p)) picking = null;
   if (sel.p && !piece()) clearSel();
-  el.innerHTML = `<div class="editor"><div class="canvas"><svg id="ed"></svg>
+  el.innerHTML = `<div class="editor${split ? ' split' : ''}"><div class="canvas"><svg id="ed"></svg>
     <div class="legend"><span><i class="l-cut"></i>Cutting line</span><span><i class="l-seam"></i>Stitching line</span><span><i class="l-fold"></i>Fold</span><span>${esc(profileOf(g).name)} · ${esc(TYPES[g.type].name)}</span></div></div>
-    <aside class="props" id="edp"></aside></div>`;
+    ${split ? '<div class="mini3d"></div>' : ''}<aside class="props" id="edp"></aside></div>`;
   svg = el.querySelector('#ed');
   bind();
   if (!view) fit();
   draw(); props();
+  if (split) { // the garment as it is now, sewn up and draped; it re-drapes from where it hangs as the pattern changes
+    const box = el.querySelector('.mini3d');
+    if (simType(g)) mount3D(box, g); else box.innerHTML = '<div class="empty">This garment has no 3D view yet. For your own pieces, choose what each one is under "In 3D".</div>';
+  }
   const P = el.querySelector('#edp');
   P.onclick = (e) => {
     const b = e.target.closest('[data-a],[data-sel]');
@@ -293,7 +378,13 @@ export function renderPattern(el) {
     if (!p || !f || f === 'allsa') return;
     if (f === 'piecename') { p.name = e.target.value || p.name; p.renamed = true; }
     if (f === 'pcut') { p.cut.n = Math.max(1, Math.round(+e.target.value) || 1); markEdited(p); }
-    if (f === 'prole') p.role = e.target.value || undefined;
+    if (f === 'prole') { p.role = e.target.value || undefined; if (p.role !== 'patch') delete p.on; }
+    if (f === 'pon') { // onto the middle of the piece to start with
+      const h = g.pieces.find((q) => q.id === e.target.value);
+      if (h) { const hb = G.bbox(G.outline(h)), pb = G.bbox(G.outline(p)); p.on = { p: h.id, x: Math.round(hb.x + (hb.w - pb.w) / 2), y: Math.round(hb.y + (hb.h - pb.h) / 2) }; } else delete p.on;
+      markEdited(p);
+    }
+    if (f === 'prev') p.rev = e.target.checked;
     if (f === 'sname') p.segs[sel.seg].name = e.target.value;
     if (f === 'pmirror') { p.cut.mirror = e.target.checked; markEdited(p); }
     if (f === 'sa') { const v = parseLen(e.target.value); if (!(v >= 0)) { props(); return; } p.segs[sel.seg].sa = v; markEdited(p); }

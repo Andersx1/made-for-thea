@@ -177,6 +177,10 @@ table.pieces th { font-size: 11.5px; color: var(--muted); font-weight: 650; text
 
 /* ---------- pattern editor ---------- */
 .editor { display: grid; grid-template-columns: 1fr 304px; height: 100% }
+.editor.split { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) 304px }
+.mini3d { position: relative; min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid var(--line) }
+.mini3d canvas { display: block; width: 100%; height: 100%; cursor: grab }
+.mini3d .empty { padding: 24px }
 .canvas { position: relative; min-width: 0 }
 #ed { width: 100%; height: 100%; display: block; background: var(--sunken); touch-action: none; user-select: none }
 .legend { position: absolute; left: 14px; bottom: 14px; display: flex; gap: 16px; background: rgba(255, 255, 255, .95); border: 1px solid var(--line); border-radius: 9px; padding: 7px 12px; font-size: 12px; color: var(--ink-2); box-shadow: var(--shadow) }
@@ -212,6 +216,9 @@ table.pieces th { font-size: 11.5px; color: var(--muted); font-weight: 650; text
 .v3dmsg { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); background: rgba(255, 255, 255, .96); border: 1px solid var(--line); border-radius: 20px; padding: 7px 16px; font-size: 13px; color: var(--ink-2); pointer-events: none; box-shadow: var(--shadow) }
 .v3d .opts { border-left: 1px solid var(--line); border-right: 0 }
 .swatch { width: 38px; height: 38px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line) }
+.fitkey i { display: block; height: 12px; border-radius: 6px; border: 1px solid var(--line); background: linear-gradient(90deg, #4f7fd9, #e9e4dc 42%, #e9e4dc 58%, #f2c744 79%, #e5484d) }
+.fitkey div { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-2); margin: 4px 0 8px }
+.v3d .opts h4 { margin-top: 18px }
 #main.tab-view3d { overflow: hidden }
 
 /* ---------- fabric layout ---------- */

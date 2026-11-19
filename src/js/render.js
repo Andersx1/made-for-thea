@@ -40,6 +40,10 @@ export function pieceSVG(p, { k = 0.1, print = false, selected = false, sub = ''
   for (const m of p.marks || []) {
     if (m.type === 'text') s += `<text x="${f2(m.pts[0].x)}" y="${f2(m.pts[0].y)}" font-size="${fs * 0.55}" text-anchor="middle" fill="${ink}" pointer-events="none">${esc(m.text)}</text>`;
     else if (m.type === 'button') s += `<circle cx="${f2(m.pts[0].x)}" cy="${f2(m.pts[0].y)}" r="0.6" ${g}/>`;
+    else if (m.type === 'pleat') { // fold line, placement line (dashed) and an arrow: fold the first onto the second
+      const [A, Bp] = m.pts, { a, b: c } = nearestSeg(p, A).dir, L = dist(a, c) || 1, sg = outSign(p), inn = (q, d) => ({ x: q.x - sg * (c.y - a.y) / L * d, y: q.y + sg * (c.x - a.x) / L * d });
+      s += `<polyline points="${pts([A, inn(A, 6)])}" ${g}/><polyline points="${pts([Bp, inn(Bp, 6)])}" ${g} stroke-dasharray="${SW.dash}"/><polyline points="${pts([inn(A, 2), inn(Bp, 2)])}" ${g}/>${arrow(inn(Bp, 2), inn(A, 2), fs * 0.5, g)}`;
+    }
     else s += `<polyline points="${pts(m.pts)}" ${g}${m.type === 'dash' ? ` stroke-dasharray="${SW.dash}"` : ''}/>`;
   }
   for (const q of p.notches || []) { const l = notchLine(p, q); if (l) s += `<line x1="${f2(l[0].x)}" y1="${f2(l[0].y)}" x2="${f2(l[1].x)}" y2="${f2(l[1].y)}" ${g} stroke-width="${SW.cut}"/>`; }
